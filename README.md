@@ -14,10 +14,11 @@ Players join with an unmodified game: the community [AvP2 all-in-one pack](https
 
 You need a dedicated server with the [AvP2 all-in-one pack](https://avpunknown.com/avp2aio/) installed, and the [Master Server Patch 2.4](https://avpunknown.com/avp2master/) if your copy does not have it yet: Windows, or Linux with Wine.
 
-1. Download the latest `avp2bots-<date>.zip` from the [Releases](../../releases) page.
-2. Unzip it into the game folder, next to `AvP2Serv.exe`. It adds the folders `botmod\` and `botnav\` and replaces no game file.
-3. In `customrez.txt` (game folder), replace the line `Rez0="lithserver.rez"` with `Rez0="botmod"`. Putting the old line back removes the bots.
-4. Start `AvP2Serv.exe` as usual, with a Deathmatch or Team Deathmatch game. Six bots join, two of each species.
+1. Download the latest `avp2bots-<date>.zip` from the [Releases](../../releases) page and unzip it anywhere.
+2. Close the dedicated server if it runs, then double-click **`install.bat`**. If the game is under `Program Files`, right-click it and choose *Run as administrator*. It finds the game folder (or asks for it), copies the bots into it (`botmod\`, `botnav\`) and makes `customrez.txt` load them, keeping a copy of the original. It replaces no game file.
+3. Start `AvP2Serv.exe` as usual, with a Deathmatch or Team Deathmatch game. Six bots join, two of each species.
+
+To remove the bots, run **`uninstall.bat`**: it puts the original `customrez.txt` back and deletes `botmod\` and `botnav\`. Running `install.bat` from a newer release updates the bots and keeps your `bots.cfg`. Manual installation: see [docs/ADMIN.md](docs/ADMIN.md).
 
 Then, if you want, edit `botnav\bots.cfg`: for example `fill = 8` keeps the server at 8 players, bots making up the difference and balancing the teams. Every setting is described in [docs/ADMIN.md](docs/ADMIN.md).
 

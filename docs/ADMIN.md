@@ -22,6 +22,10 @@ The bots are the game's own AI characters, driven by the waypoint graph instead 
 
 ## Installation (dedicated server)
 
+**Quick install (Windows):** unzip the release anywhere, close the server, and run `install.bat` (as administrator if the game is under `Program Files`). It finds the game folder or asks for it, copies `botmod\` and `botnav\` (an update keeps your `bots.cfg` and puts the new defaults in `bots.cfg.default`), and edits `customrez.txt` as in step 2 below, saving the original as `customrez.txt.before-avp2bots`. `uninstall.bat` restores that file and deletes `botmod\` and `botnav\`. Both also take the game folder as an argument: `install.bat "D:\Games\Aliens vs. Predator 2"`.
+
+**Manual installation:**
+
 1. Create a folder named `botmod` next to `AvP2Serv.exe` and put `object.lto` in it.
 2. In `customrez.txt`, replace the line `Rez0="lithserver.rez"` with `Rez0="botmod"`:
    ```

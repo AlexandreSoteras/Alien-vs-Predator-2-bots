@@ -7,6 +7,7 @@ Layout (copy the contents next to AvP2Serv.exe):
   customrez.txt.example    loads botmod/ last
   ADMIN.md, README.md      documentation
   LICENSE                  MIT (our files)
+  install.bat, uninstall.bat, avp2bots-setup.ps1   quick install into the game folder / removal
 
 Usage: py -I tools/package.py [--lto server/out/object.lto] [--name avp2bots-test]
 """
@@ -145,6 +146,8 @@ def main():
     shutil.copyfile(os.path.join(ROOT, "docs", "ADMIN.md"), os.path.join(out, "ADMIN.md"))
     shutil.copyfile(os.path.join(ROOT, "README.md"), os.path.join(out, "README.md"))
     shutil.copyfile(os.path.join(ROOT, "LICENSE"), os.path.join(out, "LICENSE"))
+    for f in ("install.bat", "uninstall.bat", "avp2bots-setup.ps1"):  # quick install / uninstall
+        shutil.copyfile(os.path.join(ROOT, "setup", f), os.path.join(out, f))
 
     zpath = out + ".zip"
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
