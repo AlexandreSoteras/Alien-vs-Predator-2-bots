@@ -885,6 +885,19 @@ def main():
          r"^(\t\t\t\t\t\tm_fFaceHugTime = g_pLTServer->GetTime\(\);\n)",
          lambda m: m.group(1) + "\t\t\t\t\t\tBotMgr_OnFacehugAttach(m_hFaceHugger, m_hObject, (int)m_nCharacterSet); // @TAG\n"),
     ])
+    # Found 2026-11-12 on a live server: a human Marine killed a Marine bot in Deathmatch and every
+    # client got the single-player "Mission failed!" screen. CCharacter::CheckMissionFailed sends SCM_MISSION_FAILED
+    # to ALL clients when a player kills a non-player ally of his own class; stock multiplayer had no AI characters,
+    # so the rule never ran there. In multiplayer it never applies (a bot is a deathmatch opponent).
+    print("Character.cpp (multiplayer: no single-player 'mission failed')")
+    patch("ObjectDLL/Character.cpp", [
+        ("botmissionfail",
+         r"^(\t// Do nothing if the dying character is a player\n\tif \(IsPlayer\(m_hObject\)\)\n\t\treturn;\n)",
+         lambda m: m.group(1) + "\n\t// @TAG: never in multiplayer, where the AI characters are the bots (their killer\n"
+                   "\t// is a deathmatch opponent, not a player who shot his ally): every client showed \"Mission failed!\"\n"
+                   "\tif (g_pGameServerShell->GetGameType().IsMultiplayer())\n"
+                   "\t\treturn;\n"),
+    ])
 
 
 def server_ext():

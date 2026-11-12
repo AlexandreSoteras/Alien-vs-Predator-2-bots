@@ -66,4 +66,5 @@
 | botgrow, botnochar | Character.cpp | `UpdateChestbursterCycle`: for a bot, the engine no longer `SetCharacter`s the AI (in MP that rebuilds the attachments and left CAI::m_pWeaponPosition dangling: an access violation in `HasAmmo` <- `ChooseBestWeapon`, 8 in 52 lifecycle runs); BotMgr spawns the adult in place. The `CHARACTER` trigger is ignored for bots. |
 | bothugattach | BodyProp.cpp | The body a bot hugs and its host are passed to BotMgr, which keeps the body awake (option `hugbody`). |
 | botseesize | AISenseSee.cpp | Bots notice small targets more slowly (`BotMgr_SizeSeeFactor`, option `smallsight`). |
+| botmissionfail | Character.cpp | `CCharacter::CheckMissionFailed`: never in multiplayer. A player killing an AI character the game calls his ally (a Marine bot killed by a Marine player in Deathmatch) sent the single-player "Mission failed!" screen to every client; stock multiplayer never had AI characters. |
 | (manual commit) | Destructible.cpp | Fix a `GetCanBeOnFire(-1)` out-of-bounds read (random crash at level load). |
