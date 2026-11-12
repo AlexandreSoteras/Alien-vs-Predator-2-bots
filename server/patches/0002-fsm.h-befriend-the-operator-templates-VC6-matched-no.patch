@@ -1,0 +1,67 @@
+From ce94d7893e1fab405971d5c92016570d2210ff36 Mon Sep 17 00:00:00 2001
+From: avp2bots <avp2bots@localhost>
+Date: Tue, 10 Nov 2026 12:51:18 +0100
+Subject: [PATCH] fsm.h: befriend the operator<< / >> templates (VC6 matched
+ non-template friends to them); WONAPI: typename, const strchr
+---
+ AVP2/ObjectDLL/fsm.h                       |  7 +++++--
+ LT2/lithshared/wonapi/WONCommon/BiMap.h    | 11 ++++++-----
+ LT2/lithshared/wonapi/WONMisc/FTPGetOp.cpp |  2 +-
+ 3 files changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/AVP2/ObjectDLL/fsm.h b/AVP2/ObjectDLL/fsm.h
+index 814ebb8..34d522f 100644
+--- a/AVP2/ObjectDLL/fsm.h
++++ b/AVP2/ObjectDLL/fsm.h
+@@ -42,8 +42,11 @@ public :
+ 	typedef typename MessageBuffer::const_iterator const_MessageIterator;
+ 
+ #ifdef _WIN32
+-	friend ILTMessage & operator<<(ILTMessage & out, const FiniteStateMachine & val);
+-	friend ILTMessage & operator>>(ILTMessage & in, FiniteStateMachine & val);
++	// VS2022: VC6 matched these non-template friend declarations to the operator
++	// templates defined at the end of this file; a conforming compiler takes them
++	// for separate (undefined) functions. Befriend the templates themselves.
++	template< class FsmState, class FsmMsg > friend ILTMessage & operator<<(ILTMessage & out, const FiniteStateMachine<FsmState,FsmMsg> & val);
++	template< class FsmState, class FsmMsg > friend ILTMessage & operator>>(ILTMessage & in, FiniteStateMachine<FsmState,FsmMsg> & val);
+ #else
+ 	friend ILTMessage & operator<< <>(ILTMessage & out, const FiniteStateMachine & val);
+ 	friend ILTMessage & operator>> <>(ILTMessage & in, FiniteStateMachine & val);
+diff --git a/LT2/lithshared/wonapi/WONCommon/BiMap.h b/LT2/lithshared/wonapi/WONCommon/BiMap.h
+index b59252a..f1bb958 100644
+--- a/LT2/lithshared/wonapi/WONCommon/BiMap.h
++++ b/LT2/lithshared/wonapi/WONCommon/BiMap.h
+@@ -15,11 +15,12 @@ public:
+ 	struct KeyMapValue;
+ 
+ 	typedef std::multimap<Key, KeyMapValue*, KeyMapPred> KeyMap;
+-	typedef std::multimap<Val, KeyMap::iterator, ValMapPred> ValMap;
+-	typedef KeyMap::iterator KeyItr;
+-	typedef ValMap::iterator ValItr;
+-	typedef KeyMap::const_iterator ConstKeyItr;
+-	typedef ValMap::const_iterator ConstValItr;
++	// VS2022: typename for dependent types
++	typedef std::multimap<Val, typename KeyMap::iterator, ValMapPred> ValMap;
++	typedef typename KeyMap::iterator KeyItr;
++	typedef typename ValMap::iterator ValItr;
++	typedef typename KeyMap::const_iterator ConstKeyItr;
++	typedef typename ValMap::const_iterator ConstValItr;
+ 
+ 	typedef KeyItr iterator;
+ 	typedef ConstKeyItr const_iterator;
+diff --git a/LT2/lithshared/wonapi/WONMisc/FTPGetOp.cpp b/LT2/lithshared/wonapi/WONMisc/FTPGetOp.cpp
+index 3d9cc44..b6d66c4 100644
+--- a/LT2/lithshared/wonapi/WONMisc/FTPGetOp.cpp
++++ b/LT2/lithshared/wonapi/WONMisc/FTPGetOp.cpp
+@@ -206,7 +206,7 @@ bool FTPGetOp::SendRequest()
+ ///////////////////////////////////////////////////////////////////////////////
+ bool FTPGetOp::ParsePasv(const char *theStatusLine)
+ {
+-	char *aBufP = strchr(theStatusLine,'(');
++	const char *aBufP = strchr(theStatusLine,'('); // VS2022: strchr on a const char* returns const char*
+ 	if(aBufP==NULL)
+ 	{
+ 		Finish(WS_FTP_InvalidPasvResponse);
+-- 
+2.52.0.windows.1
+

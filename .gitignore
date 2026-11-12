@@ -1,0 +1,12 @@
+# working files (never published)
+maps/
+farm/
+release/
+testserver/
+pending/
+server/game/
+server/build/
+server/out/
+bots/tests/_build/
+__pycache__/
+*.log

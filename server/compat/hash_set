@@ -1,0 +1,51 @@
+// compat/hash_set - STLport's std::hash_set<Key, Hash, Equal>.
+// See compat/hash_map and compat/stlport_hashtable.h.
+#pragma once
+#include "stlport_hashtable.h"
+#include <functional>
+
+namespace std {
+
+template <class Key, class HashFn = stlport_compat::hash<Key>, class EqualKey = equal_to<Key> >
+class hash_set
+{
+    typedef stlport_compat::hashtable<Key, Key, HashFn, stlport_compat::identity<Key>, EqualKey> table;
+    table ht;
+
+public:
+    typedef Key                              key_type;
+    typedef Key                              value_type;
+    typedef HashFn                           hasher;
+    typedef EqualKey                         key_equal;
+    typedef size_t                           size_type;
+    // elements of a set are immutable: both iterator types are const
+    typedef typename table::const_iterator   iterator;
+    typedef typename table::const_iterator   const_iterator;
+
+    hash_set() : ht(100) {}
+    explicit hash_set(size_type n) : ht(n) {}
+
+    size_type size() const         { return ht.size(); }
+    bool      empty() const        { return ht.empty(); }
+    size_type bucket_count() const { return ht.bucket_count(); }
+    void      swap(hash_set& o)    { ht.swap(o.ht); }
+
+    iterator begin() const { return ht.begin(); }
+    iterator end() const   { return ht.end(); }
+
+    pair<iterator, bool> insert(const value_type& obj)
+    {
+        pair<typename table::iterator, bool> p = ht.insert_unique(obj);
+        return pair<iterator, bool>(p.first, p.second);
+    }
+
+    iterator  find(const key_type& key) const  { return ht.find(key); }
+    size_type count(const key_type& key) const { return ht.count(key); }
+
+    size_type erase(const key_type& key) { return ht.erase(key); }
+    void      erase(iterator it)         { ht.erase(it); }
+    void      clear()                    { ht.clear(); }
+    void      resize(size_type hint)     { ht.resize(hint); }
+};
+
+} // namespace std

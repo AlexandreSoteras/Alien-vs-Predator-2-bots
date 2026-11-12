@@ -1,0 +1,169 @@
+From 0b20274e7f5c33df2819d74e12aa0e71ae02eb28 Mon Sep 17 00:00:00 2001
+From: avp2bots <avp2bots@localhost>
+Date: Tue, 10 Nov 2026 12:48:33 +0100
+Subject: [PATCH] ObjectDLL/Shared/SDK: VS2022 compile fixes
+
+- iltclient.h, iltserver.h: default arguments on function-pointer members are
+  ill-formed; commented out (ABI unchanged), the one caller passes LTNULL
+- Character.cpp: &CCharacter::UpdateExoEnergy
+- fsm.h, PlugFactoryTemplate.h: typename for dependent types
+- Sparam.cpp: const char* results of strstr
+- AIAnimButeMgr.cpp, ObjectivesButeMgr.cpp: #include <algorithm>
+---
+ AVP2/ObjectDLL/AIAnimButeMgr.cpp  | 2 ++
+ AVP2/ObjectDLL/AINode.cpp         | 2 +-
+ AVP2/ObjectDLL/Character.cpp      | 4 ++--
+ AVP2/ObjectDLL/Sparam.cpp         | 4 ++--
+ AVP2/ObjectDLL/fsm.h              | 2 +-
+ AVP2/Shared/ObjectivesButeMgr.cpp | 1 +
+ AVP2/Shared/PlugFactoryTemplate.h | 2 +-
+ LT2/sdk/inc/iltclient.h           | 4 ++--
+ LT2/sdk/inc/iltserver.h           | 2 +-
+ 9 files changed, 13 insertions(+), 10 deletions(-)
+
+diff --git a/AVP2/ObjectDLL/AIAnimButeMgr.cpp b/AVP2/ObjectDLL/AIAnimButeMgr.cpp
+index 298e208..00854a5 100644
+--- a/AVP2/ObjectDLL/AIAnimButeMgr.cpp
++++ b/AVP2/ObjectDLL/AIAnimButeMgr.cpp
+@@ -18,6 +18,8 @@ const char * g_szAnimSetType = "AnimSet";
+ const char * g_szAnimTableType = "AnimTable";
+ 
+ 
++#include <algorithm> // VS2022: std::transform
++
+ // Attribute names.
+ const char * g_szAnimNameAttrib = "Anim";
+ const char * g_szAnimWeightAttrib = "Weight";
+diff --git a/AVP2/ObjectDLL/AINode.cpp b/AVP2/ObjectDLL/AINode.cpp
+index 13e6ed3..54ba791 100644
+--- a/AVP2/ObjectDLL/AINode.cpp
++++ b/AVP2/ObjectDLL/AINode.cpp
+@@ -1001,7 +1001,7 @@ CAINode::CAINode(AINode & node, uint32 dwID)
+ 		LTCounter poly_counter;
+ 		g_pLTServer->StartCounter(&poly_counter);
+ #endif
+-		g_pLTServer->FindPoliesTouchingBox(m_vPos - vDims, m_vPos + vDims, hPolies, nNumPolies, &nNumPoliesFound, IgnoreAIVolumes );
++		g_pLTServer->FindPoliesTouchingBox(m_vPos - vDims, m_vPos + vDims, hPolies, nNumPolies, &nNumPoliesFound, IgnoreAIVolumes, LTNULL ); // VS2022: default argument spelled out (see iltserver.h)
+ 
+ #ifdef WWNODE_PROFILE
+ 		const uint32 nPolyTicks = g_pLTServer->EndCounter(&poly_counter);
+diff --git a/AVP2/ObjectDLL/Character.cpp b/AVP2/ObjectDLL/Character.cpp
+index 7093da9..ce541df 100644
+--- a/AVP2/ObjectDLL/Character.cpp
++++ b/AVP2/ObjectDLL/Character.cpp
+@@ -5115,7 +5115,7 @@ void CCharacter::ResetCharacter()
+ 
+ 	// Set function pointer for exosuit energy
+ #ifndef __LINUX
+-	fpUpdateExoEnergy = IsExosuit(m_cmMovement.GetCharacterButes()) ? UpdateExoEnergy : LTNULL;
++	fpUpdateExoEnergy = IsExosuit(m_cmMovement.GetCharacterButes()) ? &CCharacter::UpdateExoEnergy : LTNULL; // VS2022: pointer to member needs &Class::
+ #else
+ 	if (IsExosuit(m_cmMovement.GetCharacterButes()))
+ 		fpUpdateExoEnergy = &CCharacter::UpdateExoEnergy;
+@@ -8908,7 +8908,7 @@ void CCharacter::Load(HMESSAGEREAD hRead)
+ 
+ 	// Set function pointer for exosuit energy
+ #ifndef __LINUX
+-	fpUpdateExoEnergy = IsExosuit(m_cmMovement.GetCharacterButes()) ? UpdateExoEnergy : LTNULL;
++	fpUpdateExoEnergy = IsExosuit(m_cmMovement.GetCharacterButes()) ? &CCharacter::UpdateExoEnergy : LTNULL; // VS2022: pointer to member needs &Class::
+ #else
+ 	if (IsExosuit(m_cmMovement.GetCharacterButes()))
+ 		fpUpdateExoEnergy = &CCharacter::UpdateExoEnergy;
+diff --git a/AVP2/ObjectDLL/Sparam.cpp b/AVP2/ObjectDLL/Sparam.cpp
+index 7960e17..13e152a 100644
+--- a/AVP2/ObjectDLL/Sparam.cpp
++++ b/AVP2/ObjectDLL/Sparam.cpp
+@@ -43,7 +43,7 @@ bool Sparam_Get(char* sDest, const char* sSource, const char* sId)
+ 	char sRealId[256];
+ 	wsprintf(sRealId, "[%s:", sId);
+ 
+-	char* sStart = strstr(sSource, sRealId);
++	const char* sStart = strstr(sSource, sRealId); // VS2022: strstr on a const char* returns const char*
+ 	if (!sStart) return(false);
+ 
+ 
+@@ -56,7 +56,7 @@ bool Sparam_Get(char* sDest, const char* sSource, const char* sId)
+ 
+ 	// Find the end of the param...
+ 
+-	char* pEnd = strstr(sStart, "]");
++	const char* pEnd = strstr(sStart, "]"); // VS2022: as above
+ 	if (!pEnd) return(false);
+ 	if (pEnd <= sStart) return(false);
+ 
+diff --git a/AVP2/ObjectDLL/fsm.h b/AVP2/ObjectDLL/fsm.h
+index 184db28..814ebb8 100644
+--- a/AVP2/ObjectDLL/fsm.h
++++ b/AVP2/ObjectDLL/fsm.h
+@@ -39,7 +39,7 @@ public :
+ 	typedef Callback2v<const FiniteStateMachine &, MessageType> ProcessingMessageCallbackFunction;
+ 	typedef Callback2v<const FiniteStateMachine &, StateType>   NextStateCallbackFunction;
+ 
+-	typedef MessageBuffer::const_iterator const_MessageIterator;
++	typedef typename MessageBuffer::const_iterator const_MessageIterator;
+ 
+ #ifdef _WIN32
+ 	friend ILTMessage & operator<<(ILTMessage & out, const FiniteStateMachine & val);
+diff --git a/AVP2/Shared/ObjectivesButeMgr.cpp b/AVP2/Shared/ObjectivesButeMgr.cpp
+index ffde121..d28ed9a 100644
+--- a/AVP2/Shared/ObjectivesButeMgr.cpp
++++ b/AVP2/Shared/ObjectivesButeMgr.cpp
+@@ -12,6 +12,7 @@
+ 
+ #include "stdafx.h"
+ #include "ObjectivesButeMgr.h"
++#include <algorithm> // VS2022: std::sort
+ 
+ //*********************************************************************************
+ 
+diff --git a/AVP2/Shared/PlugFactoryTemplate.h b/AVP2/Shared/PlugFactoryTemplate.h
+index 01278f2..56b71b8 100644
+--- a/AVP2/Shared/PlugFactoryTemplate.h
++++ b/AVP2/Shared/PlugFactoryTemplate.h
+@@ -48,7 +48,7 @@ protected:
+ private:
+ 	// These are protected so the main family factory can make an instance of this
+ 	typedef std::map<KeyT, PlugFactory*> PlugFactoryContainer;
+-	typedef PlugFactoryContainer::iterator PlugIterator;
++	typedef typename PlugFactoryContainer::iterator PlugIterator;
+ 
+ 	// This is needed to force the registry to be initialized before any
+ 	// derived classes use it.
+diff --git a/LT2/sdk/inc/iltclient.h b/LT2/sdk/inc/iltclient.h
+index a307f71..143b531 100644
+--- a/LT2/sdk/inc/iltclient.h
++++ b/LT2/sdk/inc/iltclient.h
+@@ -149,7 +149,7 @@
+ 		// Clear the backbuffer.  Pass in NULL to clear the whole screen.
+ 		// Flags is a combination of the CLEARSCREEN_ flags in de_codes.h.
+ 		// Returns LT_OK or LT_NOTINITIALIZED.
+-		LTRESULT	(*ClearScreen)(LTRect *pClearRect, uint32 flags, LTVector *vColor = LTNULL);
++		LTRESULT	(*ClearScreen)(LTRect *pClearRect, uint32 flags, LTVector *vColor /*= LTNULL*/); // VS2022: no default arguments on function pointers
+ 
+ 		// You must be in a Start3D()/End3D() block in order to render
+ 		// through any cameras.
+@@ -419,7 +419,7 @@
+ 		//		LT_OK if successful,  fTimer is set only if this is returned.
+ 		//		LT_FINISHED if sound is not playing (may be delayed due to collisions, or done).
+ 		//		LT_INVALIDPARAMS if hSound not available.
+-		LTRESULT	(*GetSoundOffset)( HLTSOUND hSound, uint32 * dwOffset, uint32 * dwSize = NULL );
++		LTRESULT	(*GetSoundOffset)( HLTSOUND hSound, uint32 * dwOffset, uint32 * dwSize /*= NULL*/ ); // VS2022: no default arguments on function pointers
+ 
+ 		// Check if sound finished playing or if object it was attached to was removed.
+ 		// Arguments:
+diff --git a/LT2/sdk/inc/iltserver.h b/LT2/sdk/inc/iltserver.h
+index 5384034..38d3832 100644
+--- a/LT2/sdk/inc/iltserver.h
++++ b/LT2/sdk/inc/iltserver.h
+@@ -339,7 +339,7 @@
+ 		// *pnNumPoliesFound will be set to the number of polies put into pPolyList.
+ 		// pPolyList and/or pnNumPoliesFound may be null.
+ 
+-		void (*FindPoliesTouchingBox)(const LTVector & vBoxMin, const LTVector & vBoxMax, HPOLY * pPolyList, uint32 nPolyListSize, uint32 * pnNumPoliesFound,  ObjectFilterFn FilterFn = LTNULL, void * pUserData = LTNULL);
++		void (*FindPoliesTouchingBox)(const LTVector & vBoxMin, const LTVector & vBoxMax, HPOLY * pPolyList, uint32 nPolyListSize, uint32 * pnNumPoliesFound,  ObjectFilterFn FilterFn /*= LTNULL*/, void * pUserData /*= LTNULL*/); // VS2022: no default arguments on function pointers
+ 
+ 
+ 		// Any time the engine gives you a list, you must 'give it back' with this,
+-- 
+2.52.0.windows.1
+

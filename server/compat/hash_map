@@ -1,0 +1,59 @@
+// compat/hash_map - STLport's std::hash_map<Key, T, Hash, Equal>.
+//
+// The AvP2 code was written against STLport (LT2/lithshared/stl), which we do
+// not build with; MSVC's own <hash_map> is a different, removed-in-C++17
+// stdext::hash_map. This one is backed by compat/stlport_hashtable.h, because
+// the game depends on STLport's iteration ORDER (see that file).
+#pragma once
+#include "stlport_hashtable.h"
+#include <functional>
+
+namespace std {
+
+template <class Key, class T, class HashFn = stlport_compat::hash<Key>, class EqualKey = equal_to<Key> >
+class hash_map
+{
+    typedef stlport_compat::hashtable<pair<const Key, T>, Key, HashFn,
+            stlport_compat::select1st<pair<const Key, T> >, EqualKey> table;
+    table ht;
+
+public:
+    typedef Key                              key_type;
+    typedef T                                data_type;
+    typedef T                                mapped_type;
+    typedef pair<const Key, T>               value_type;
+    typedef HashFn                           hasher;
+    typedef EqualKey                         key_equal;
+    typedef size_t                           size_type;
+    typedef typename table::iterator         iterator;
+    typedef typename table::const_iterator   const_iterator;
+
+    hash_map() : ht(100) {}
+    explicit hash_map(size_type n) : ht(n) {}
+
+    size_type size() const         { return ht.size(); }
+    bool      empty() const        { return ht.empty(); }
+    size_type bucket_count() const { return ht.bucket_count(); }
+    void      swap(hash_map& o)    { ht.swap(o.ht); }
+
+    iterator       begin()       { return ht.begin(); }
+    iterator       end()         { return ht.end(); }
+    const_iterator begin() const { return ht.begin(); }
+    const_iterator end() const   { return ht.end(); }
+
+    pair<iterator, bool> insert(const value_type& obj) { return ht.insert_unique(obj); }
+    template <class It> void insert(It f, It l)        { for (; f != l; ++f) ht.insert_unique(*f); }
+
+    T& operator[](const key_type& key) { return ht.find_or_insert(value_type(key, T())).second; }
+
+    iterator       find(const key_type& key)        { return ht.find(key); }
+    const_iterator find(const key_type& key) const  { return ht.find(key); }
+    size_type      count(const key_type& key) const { return ht.count(key); }
+
+    size_type erase(const key_type& key) { return ht.erase(key); }
+    void      erase(iterator it)         { ht.erase(it); }
+    void      clear()                    { ht.clear(); }
+    void      resize(size_type hint)     { ht.resize(hint); }
+};
+
+} // namespace std

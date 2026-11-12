@@ -1,0 +1,32 @@
+From 2e65d02ac67081e881f8649ac971a554f652f889 Mon Sep 17 00:00:00 2001
+From: avp2bots <avp2bots@localhost>
+Date: Tue, 10 Nov 2026 13:10:44 +0100
+Subject: [PATCH] Fix out-of-bounds bute read for non-character destructibles
+
+CDestructible::UpdateProgressiveDamage called GetCanBeOnFire(-1) for objects
+that are neither characters nor body props, reading before the bute array.
+Harmless with VC6's heap, an intermittent access violation at level load
+with a modern CRT.
+---
+ AVP2/ObjectDLL/Destructible.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/AVP2/ObjectDLL/Destructible.cpp b/AVP2/ObjectDLL/Destructible.cpp
+index 49157a0..1eb9ec9 100644
+--- a/AVP2/ObjectDLL/Destructible.cpp
++++ b/AVP2/ObjectDLL/Destructible.cpp
+@@ -628,7 +628,10 @@ void CDestructible::UpdateProgressiveDamage(LTFLOAT fFrameTime)
+ 	else if(pBodyProp)
+ 		nCharacter = pBodyProp->GetCharacter();
+ 
+-	LTBOOL bCanBeOnFire = g_pCharacterButeMgr->GetCanBeOnFire(nCharacter);
++	// avp2bots fix: for objects that are neither a character nor a body prop nCharacter stays -1 and the
++	// retail code read the bute set at index -1, before the start of the array. VC6's heap layout made that
++	// harmless; with a modern CRT the read intermittently faults at level load. Non-characters can burn.
++	LTBOOL bCanBeOnFire = (nCharacter >= 0) ? g_pCharacterButeMgr->GetCanBeOnFire(nCharacter) : LTTRUE;
+ 
+ 
+ 	// Loop over all the progressive damage done to us...
+-- 
+2.52.0.windows.1
+
