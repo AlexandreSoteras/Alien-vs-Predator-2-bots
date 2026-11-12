@@ -484,6 +484,7 @@ LTFLOAT g_nextFill = 0.0f;
 LTFLOAT g_nextDoors = 0.0f;
 LTFLOAT g_nextRows = 0.0f;
 // debug: how often the size factor slowed a bot's sight, by kind of target (logged with the team scores)
+static int g_playerHits[2] = {0, 0};    // players' client-side hits on bots: applied, refused (BotMgr_ValidateHit)
 static int g_smallSight[3] = {0, 0, 0};   // facehugger/chestburster, other small class, crouching human/Predator
 
 // Doors on the map (plain, rotating and hinged doors; not switches, breakables or hackables, which derive
@@ -5271,6 +5272,8 @@ void BotMgr_Update()
         if (now >= g_nextTeamLog)
         {
             BotScoreAccess::LogTeams();
+            if (g_playerHits[0] || g_playerHits[1])
+                Log("PLAYERHITS players' hits on bots so far: %d applied, %d refused", g_playerHits[0], g_playerHits[1]);
             if (g_cfg.debug)
             {
                 LogAmbushStats();
@@ -5789,6 +5792,25 @@ LTFLOAT BotMgr_DamageScale()
 LTFLOAT BotMgr_Accuracy()
 {
     return g_cfg.accuracy;
+}
+
+bool BotMgr_ValidateHit(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vTargetPos, const LTVector& vFirePos)
+{
+    // The client hit-tests a player's bullets against what it shows, so the bot it saw may have moved since: the
+    // server's check for a player target allows about 0.26 s of running; a bot gets a full second at the fastest
+    // run (Runner, 550 units/s) to cover a high ping. A claimed position farther than that is refused.
+    const Bot* b = hTarget ? FindBot(hTarget) : 0;
+    if (!b)
+        return false;
+    LTVector pos;
+    g_pLTServer->GetObjectPos(hTarget, &pos);
+    const float off = (vTargetPos - pos).Mag();
+    const bool ok = off <= 600.0f;
+    ++g_playerHits[ok ? 0 : 1];
+    if (g_cfg.debug || !ok)
+        Log("PHIT %s -> %s off=%.0f dist=%.0f%s", ObjectLabel(hShooter).c_str(), b->name.c_str(), off,
+            (pos - vFirePos).Mag(), ok ? "" : " refused");
+    return ok;
 }
 
 // A bot's skill (ServerExt_BotSkill), 0..1, sets its accuracy (the bots.cfg 'accuracy' scale: aim error and weapon

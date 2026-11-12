@@ -889,6 +889,21 @@ def main():
     # client got the single-player "Mission failed!" screen. CCharacter::CheckMissionFailed sends SCM_MISSION_FAILED
     # to ALL clients when a player kills a non-player ally of his own class; stock multiplayer had no AI characters,
     # so the rule never ran there. In multiplayer it never applies (a bot is a deathmatch opponent).
+    # A player's vector weapons (bullets, rail gun, Smart Gun, shotgun, pistols...) are hit-tested by the client in
+    # multiplayer (CWeaponModel::ClientHitDetection): when the ray meets any character, the client sends
+    # MID_WEAPON_HIT instead of the fire message, and the server applied it only to a player target
+    # (CPlayerObj::ValidatePosition). Hits on bots were dropped: only explosions and misses of the client's node test
+    # hurt them ("10 rail gun hits on a Predalien and he's fine"). Bots take them too, checked against the bot's
+    # position (BotMgr_ValidateHit).
+    print("PlayerObj.cpp (players' client-side hits on bots)")
+    patch("ObjectDLL/PlayerObj.cpp", [
+        ("botweaponhit",
+         r"^\tif\(pPlayer && pPlayer->ValidatePosition\(vTargetPos, fTimeStamp\)\)\n",
+         lambda m: "\t// @TAG: a hit the client claims on a bot counts as on a player (the server took players only)\n"
+                   "\tif((pPlayer && pPlayer->ValidatePosition(vTargetPos, fTimeStamp)) ||\n"
+                   "\t   (!pPlayer && BotMgr_ValidateHit(m_hObject, hTarget, vTargetPos, vFirePos)))\n"),
+    ])
+
     print("Character.cpp (multiplayer: no single-player 'mission failed')")
     patch("ObjectDLL/Character.cpp", [
         ("botmissionfail",

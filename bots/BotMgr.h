@@ -113,6 +113,9 @@ void BotMgr_NoteShot(HOBJECT hShooter);
 // not fire a rail gun while still turning toward the target).
 bool BotMgr_AimError(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vFirePos, LTVector& vPath, bool bFullyAimed);
 LTFLOAT BotMgr_DamageScale();  // bots.cfg 'damage': bots' weapon damage relative to players' (default 1)
+// A player's client claims a vector-weapon hit on hTarget, which it saw at vTargetPos (MID_WEAPON_HIT): true when
+// hTarget is a live bot near that position, so the hit is applied as on a player (hook botweaponhit).
+bool BotMgr_ValidateHit(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vTargetPos, const LTVector& vFirePos);
 LTFLOAT BotMgr_BotAccuracy(HOBJECT hBot); // that bot's accuracy: its server-extension skill, else bots.cfg 'accuracy'
 LTFLOAT BotMgr_Accuracy();     // bots.cfg 'accuracy': 0 = widest spread .. 1 = narrowest (default 0.5)
 bool BotMgr_AlienWallWalk();  // bots.cfg 'wallwalk': Alien bots climb walls
