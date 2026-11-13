@@ -351,6 +351,7 @@ struct Bot
     LTFLOAT loseSince;         // attached without the hug flag since (the victim survived)
     const BotClass* forcedClass; // set by 'addbot <species> <class>'; 0 = take the slot's class
     float skill;               // this bot's skill 0..1 from a server extension (each spawn); < 0 = bots.cfg
+    LTFLOAT survHoldUntil;     // Survivor: a survivor holding its ground with others until then (BotMgr_SurvivorDest)
     CombatMove cm;             // combat movement and zig-zag (reset at each spawn)
     AmbushState amb;           // wall ambush (reset at each spawn)
     CbHideState cbh;           // chestburster hiding (reset at each spawn)
@@ -423,6 +424,10 @@ struct Config
     bool cloak;   // Predator bots spawn cloaked
     bool seecloak; // bots see cloaked Predators as players do (BotMgr_CloakSeeFactor)
     bool smallSight; // bots notice small targets more slowly (BotMgr_SizeSeeFactor)
+    bool survGroup;  // Survivor: survivors regroup and hold together (BotMgr_SurvivorDest)
+    bool survHunt;   // Survivor: mutants with nothing to fight go where survivors are heard (BotMgr_SurvivorDest)
+    bool huntGroup;  // Hunt: the prey regroup and hold together (BotMgr_SurvivorDest)
+    bool huntTrack;  // Hunt: hunters with nothing to fight go where prey are heard (BotMgr_SurvivorDest)
     bool predHeal; // Predator bots use the medicomp, sift and re-cloak like players (decloak, walk only)
     bool mpWeapons; // the players' multiplayer weapons (0 = single-player AI weapons)
     LTFLOAT healthScale; // multiplier on the multiplayer class health and armor (1 = like players)
@@ -593,6 +598,10 @@ void LoadConfig()
     g_cfg.cloak = true;
     g_cfg.seecloak = true;
     g_cfg.smallSight = true;
+    g_cfg.survGroup = true;
+    g_cfg.survHunt = true;
+    g_cfg.huntGroup = false;
+    g_cfg.huntTrack = false;
     g_cfg.predHeal = true;
     g_cfg.mpWeapons = true;
     g_cfg.healthScale = 1.0f;
@@ -658,6 +667,10 @@ void LoadConfig()
         else if (!_stricmp(key, "cloak")) g_cfg.cloak = value != 0.0f;
         else if (!_stricmp(key, "seecloak")) g_cfg.seecloak = value != 0.0f;
         else if (!_stricmp(key, "smallsight")) g_cfg.smallSight = value != 0.0f;
+        else if (!_stricmp(key, "survgroup")) g_cfg.survGroup = value != 0.0f;
+        else if (!_stricmp(key, "survhunt")) g_cfg.survHunt = value != 0.0f;
+        else if (!_stricmp(key, "huntgroup")) g_cfg.huntGroup = value != 0.0f;
+        else if (!_stricmp(key, "hunttrack")) g_cfg.huntTrack = value != 0.0f;
         else if (!_stricmp(key, "predheal")) g_cfg.predHeal = value != 0.0f;
         else if (!_stricmp(key, "mpweapons")) g_cfg.mpWeapons = value != 0.0f;
         else if (!_stricmp(key, "health")) g_cfg.healthScale = value;
@@ -2069,6 +2082,15 @@ bool HuntMode()
     return GameTypeNow() == MP_HUNT;
 }
 
+// Survivor outside play (no game yet, the interlude after the first mutant, the end of a round): nobody fights
+static bool SurvivorPause()
+{
+    if (!SurvivorMode() || !g_pGameServerShell->GetMultiplayerMgr())
+        return false;
+    const int sub = g_pGameServerShell->GetMultiplayerMgr()->GetServerSubState();
+    return sub != MPMGR_SUBSTATE_SURVIVOR_TAG && sub != MPMGR_SUBSTATE_SURVIVOR_CUT;
+}
+
 bool GameTypeAllowed()
 {
     const int t = GameTypeNow();
@@ -2249,7 +2271,14 @@ void LogStatus(Bot& b, LTFLOAT now)
             b.offGraph = 0;
     }
 
-    // stuck: roaming but moved less than 48 units over the last 6 seconds
+    // stuck: roaming but moved less than 48 units over the last 6 seconds (not counted in a Survivor pause, where
+    // the round is over or about to start and a bot may stand still)
+    if (now - b.checkTime >= 6.0f && SurvivorPause())
+    {
+        b.checkTime = now;
+        b.checkPos = pos;
+        b.stuckCount = 0;
+    }
     if (now - b.checkTime >= 6.0f)
     {
         bool stuck = false;
@@ -2260,7 +2289,7 @@ void LogStatus(Bot& b, LTFLOAT now)
             // feeding on a body stands still on purpose
             // (and so does one waiting in a wall ambush)
             // (and so does a chestburster hiding or biting back until it grows)
-            if ((!_stricmp(goal.c_str(), "BotRoam") && !b.feeding && b.amb.state != AMB_WAITING &&
+            if ((!_stricmp(goal.c_str(), "BotRoam") && !b.feeding && b.amb.state != AMB_WAITING && now >= b.survHoldUntil &&
                  b.cbh.state != CBH_HIDDEN && b.cbh.state != CBH_FIGHT) || onLadder)
                 stuck = true;
             else if (IsAlien(ai) && ai->HasTarget())
@@ -2503,6 +2532,7 @@ void AddBot(BotSpecies sp, const BotClass* forced, LTFLOAT when)
     b.stuckCount = 0;
     b.forcedClass = forced;
     b.skill = -1.0f;
+    b.survHoldUntil = 0.0f;
     b.burnLogAt = 0.0f;
     b.recoilLogAt = 0.0f;
     b.recoilFires = 0;
@@ -3039,7 +3069,8 @@ struct BotScoreAccess
         if (!id)
             return;
         b.rowId = id;
-        b.rowFrags = b.rowScore = b.rowConFrags = 0;
+        // frags and score belong to the bot for the whole map, as a player's m_ClientData does across his respawns,
+        // mutations and Hunt role swaps (set to 0 when the bot is created); Survivor keeps its own score
         if (Mgr()->m_GameInfo.m_nGameType.Get() == MP_SURVIVOR)
             b.rowScore = b.survScore;
         HMESSAGEWRITE hWrite = g_pLTServer->StartMessage(LTNULL, MID_MPMGR_ADD_CLIENT);
@@ -3048,6 +3079,7 @@ struct BotScoreAccess
         hWrite->WriteByte((uint8)b.scoreSet);
         hWrite->WriteDWord(b.rowId);
         g_pLTServer->EndMessage(hWrite);
+        RowUpdate(b);  // the ADD message carries no frags or score: a new row would show 0 until the next change
         Log("ROW add %s id=%u \"%s\"", b.name.c_str(), (unsigned)b.rowId, b.display.c_str());
     }
 
@@ -3218,8 +3250,11 @@ void ApplyFill()
     }
     if (nHumans != g_lastHumans)
     {
-        Log("FILL %d players, %d bots: %d marines, %d aliens, %d predators", nHumans, total, want[BOT_MARINE],
-            want[BOT_ALIEN], want[BOT_PREDATOR]);
+        if (SurvivorMode() || HuntMode())
+            Log("FILL %d players, %d bots (their races follow the game's rules)", nHumans, total);
+        else
+            Log("FILL %d players, %d bots: %d marines, %d aliens, %d predators", nHumans, total, want[BOT_MARINE],
+                want[BOT_ALIEN], want[BOT_PREDATOR]);
         g_lastHumans = nHumans;
     }
     ApplyCounts(want);
@@ -3234,7 +3269,10 @@ void ScoreRowAdd(Bot& b)
 
 void ScoreRowRemove(Bot& b)
 {
+    // a mutation, a Hunt role swap, a new Survivor round, a removed bot: the row comes back at the next spawn,
+    // with the new name and class (Spawn sets scoreSet again); CheckRows must not bring the old one back before
     BotScoreAccess::RowRemove(b);
+    b.scoreSet = -1;
 }
 } // namespace
 
@@ -4500,6 +4538,89 @@ void BotMgr_AmmoRunCancel(CAI* pAI)
         Log("AMMORUN %s cancelled (no way to a box)", b->name.c_str());
 }
 
+bool BotMgr_SurvivorDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
+{
+    // Survivor, while the races fight (CUT). Survivor players stick together and hold a spot, watching every way in,
+    // and the mutants go where the survivors are: their shots are heard across the map. A bot survivor with
+    // another survivor (bot or player) farther than 500 units goes to the nearest one; with one close, it holds
+    // for 5-10 s, then looks again. A mutant with nothing to fight goes where the nearest survivor last fired
+    // (in the last 8 s, within 3000 units) or is heard walking (within 1000), give or take 200 units.
+    // Hunt the same way: the prey are the side that sticks together, the hunters the side that tracks them.
+    *pHoldUntil = 0.0f;
+    if (!pAI || !pDest || !g_pGameServerShell->GetMultiplayerMgr())
+        return false;
+    int survRace = -1;
+    bool groupOn = false, trackOn = false;
+    if (SurvivorMode() && g_pGameServerShell->GetMultiplayerMgr()->GetServerSubState() == MPMGR_SUBSTATE_SURVIVOR_CUT)
+    {
+        survRace = SurvivorRace(false);
+        groupOn = g_cfg.survGroup;
+        trackOn = g_cfg.survHunt;
+    }
+    else if (HuntMode())
+    {
+        survRace = HuntRace(1);
+        groupOn = g_cfg.huntGroup;
+        trackOn = g_cfg.huntTrack;
+    }
+    if (survRace < 0)
+        return false;
+    Bot* b = FindBot(pAI->m_hObject);
+    if (!b)
+        return false;
+    const bool survivor = SpeciesOf(pAI) == survRace;
+    if (survivor ? !groupOn : !trackOn)
+        return false;
+    const LTVector p = pAI->GetPosition();
+    const LTFLOAT now = g_pLTServer->GetTime();
+    CCharacter* best = 0;
+    float bestD = survivor ? 1e9f : 0.0f;
+    float bestScore = 1e9f;
+    for (CCharacterMgr::CharacterIterator it = g_pCharacterMgr->BeginCharacters(); it != g_pCharacterMgr->EndCharacters();
+         ++it)
+    {
+        CCharacter* c = *it;
+        if (!c || c == pAI || c->IsDead() || SpeciesOf(c) != survRace)
+            continue;
+        const float d = (c->GetPosition() - p).Mag();
+        if (survivor)
+        {
+            if (d < bestD)
+            {
+                bestD = d;
+                best = c;
+            }
+            continue;
+        }
+        std::map<HOBJECT, LTFLOAT>::const_iterator shot = g_lastShot.find(c->m_hObject);
+        const bool heardShot = shot != g_lastShot.end() && now - shot->second < 8.0f && d < 3000.0f;
+        if ((heardShot || d < 1000.0f) && d < bestScore)
+        {
+            bestScore = d;
+            best = c;
+        }
+    }
+    if (!best)
+        return false;
+    if (survivor && bestD <= 500.0f)
+    {
+        *pHoldUntil = now + GetRandom(5.0f, 10.0f);
+        b->survHoldUntil = *pHoldUntil;
+        return true;
+    }
+    LTVector dest = best->GetPosition();
+    if (!survivor)
+    {
+        dest.x += GetRandom(-200.0f, 200.0f);
+        dest.z += GetRandom(-200.0f, 200.0f);
+    }
+    *pDest = dest;
+    if (g_cfg.debug)
+        Log("SURVDEST %s %s -> %s at %.0f", b->name.c_str(), survivor ? "regroup" : "hunt",
+            ObjectLabel(best->m_hObject).c_str(), (best->GetPosition() - p).Mag());
+    return true;
+}
+
 bool BotMgr_PickupGoal(CAI* pAI, LTVector* pDest)
 {
     if (!pAI || !pDest || !BotMgr_IsBot(pAI->m_hObject))
@@ -4882,6 +5003,11 @@ void BotMgr_PreStartWorld()
 void BotMgr_PostStartWorld()
 {
     g_bots.clear();
+    // The server clock starts again at 0 with every world: the next run of each periodic task must too, or it waited
+    // until the new map outlived the old one (doors, relations, score rows, command.txt, Survivor points and the
+    // STATUS lines all stopped a few maps into a server's life; found on a live server).
+    g_nextStatus = g_nextRelations = g_nextCommandPoll = g_nextTeamLog = g_nextFill = 0.0f;
+    g_nextDoors = g_nextRows = g_nextSurvTick = 0.0f;  // (g_nextHeat: BuildAmbushData)
     LoadConfig();
     if (g_cfg.log && !g_log)
         g_log = fopen("avp2bots_bots.log", "a");
@@ -8027,7 +8153,8 @@ void ApplyCounts(const int want[BOT_SPECIES_COUNT])
         int total = 0;
         for (int s = 0; s < BOT_SPECIES_COUNT; ++s)
             total += want[s];
-        const int sp = RaceSpecies(SurvivorRace(false));
+        // (SurvivorRace is the server's Survivor setting even in Hunt: only Survivor adds survivors here)
+        const int sp = SurvivorMode() ? RaceSpecies(SurvivorRace(false)) : -1;
         while ((int)g_bots.size() < total && sp >= 0)
             AddBot((BotSpecies)sp, 0, now + 0.5f + 0.3f * (float)g_bots.size());
         while ((int)g_bots.size() < total && HuntMode())

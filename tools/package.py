@@ -87,6 +87,9 @@ hugbody = 1
 cbhide = 1
 # Small targets (facehuggers, chestbursters, crouching players) are noticed more slowly
 smallsight = 1
+# Survivor: survivors stick together and hold, mutants go where survivors are heard
+survgroup = 1
+survhunt = 1
 # Bots take burns, splash, friendly and acid damage like players, keep their limbs, always run
 playerburn = 1
 playerlimbs = 1

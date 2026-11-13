@@ -181,6 +181,25 @@ void BotRoamGoal::PickDestination()
         BotMgr_FeedEnd(GetAIPtr(), true);
     }
 
+    // Survivor: survivors regroup and hold (survgroup), mutants go where survivors are heard (survhunt)
+    LTVector survDest;
+    LTFLOAT holdUntil = 0.0f;
+    if (BotMgr_SurvivorDest(GetAIPtr(), &survDest, &holdUntil))
+    {
+        if (holdUntil > 0.0f)
+        {
+            m_Follow.Clear();
+            m_fRetryTime = holdUntil;
+            GetAIPtr()->SetNextAction(CAI::ACTION_IDLE);
+            return;
+        }
+        if (m_Follow.Set(survDest))
+        {
+            m_fGiveUpTime = now + 10.0f + (survDest - p).Mag() / 150.0f;
+            return;
+        }
+    }
+
     // an alien with nothing to do sometimes waits on a wall above a busy route, as alien players do
     LTVector wall;
     if (BotMgr_AmbushPick(GetAIPtr(), &wall))

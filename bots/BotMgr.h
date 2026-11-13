@@ -45,6 +45,9 @@ bool BotMgr_IsBot(HOBJECT hObj);  // one of our bots (alive)
 bool BotMgr_CanTakePickup(HOBJECT hObj, const char* szMessage);
 // A health (or armor) pickup a hurt Marine bot should go for; false when none is needed or available.
 bool BotMgr_PickupGoal(CAI* pAI, LTVector* pDest);
+// Survivor (bots.cfg 'survgroup', 'survhunt'; used by BotRoam): true with *pHoldUntil > 0 = stand with the group until then;
+// true with *pHoldUntil == 0 = go to *pDest (a survivor regrouping, a mutant going where a survivor was heard).
+bool BotMgr_SurvivorDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil);
 // Ammunition like players (bots.cfg ammopickups): may this bot open an ammo box (HumanOnly box: Marines, else
 // Predators; AmmoBox::SetupOpenState); one of the box's pickup messages for a bot that opened it (BotMgr counts the
 // pools it uses); a PlayerOnly ammo pickup (spears stuck in walls) a bot takes: true = counted, the pickup goes.
