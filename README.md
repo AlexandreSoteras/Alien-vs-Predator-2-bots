@@ -55,11 +55,11 @@ The bots try to play like people do:
 - they use the multiplayer classes (Smartgunner, Sniper, Stalker, Predalien...), with their models, health, armour and default weapons, and fire the players' multiplayer weapons with the players' rates and damage;
 - Marines and Predators climb ladders; Aliens climb walls, pounce, head-bite and heal on bodies; Predators cloak, heal with the medicomp and lock their disc and shoulder cannon like players;
 - they see, hear footsteps and react with human delays, and miss like people do (`accuracy` in `bots.cfg`);
-- they follow the game's rules: free-for-all in Deathmatch, species teams in Team Deathmatch, Hunt and Survivor rules, friendly fire as set on the server, the alien lifecycle (facehugger, chestburster, adult) when the server turns it on;
+- they follow the game's rules: free-for-all in Deathmatch, species teams in Team Deathmatch, Hunt, Survivor and Evac rules (lives per round, the evacuation zone), friendly fire as set on the server, the alien lifecycle (facehugger, chestburster, adult) when the server turns it on;
 - their kills count on the scores like players' kills;
 - the server can keep a number of players topped up with bots (`fill`), balancing the teams.
 
-Each of these behaviours can be switched off in `botnav\bots.cfg`. Navigation is generated automatically from the stock map files: no hand-placed waypoints. Bots play on the 27 stock Deathmatch maps (used by Deathmatch, Team Deathmatch, Hunt and Survivor); there are no bots in Evac and Overrun.
+Each of these behaviours can be switched off in `botnav\bots.cfg`. Navigation is generated automatically from the stock map files: no hand-placed waypoints. Bots play on the 27 stock Deathmatch maps (used by Deathmatch, Team Deathmatch, Hunt and Survivor) and on the Evac maps evac_verloc, evac_colony, evac_fury151, evac_gauntlet and evac_auriga; there are no bots in Overrun.
 
 ## Documentation
 

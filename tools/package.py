@@ -96,15 +96,25 @@ playerlimbs = 1
 playerrecoil = 1
 playerhits = 1
 alwaysrun = 1
+# No rocket, plasma bolt or grenade into a wall or character inside its own blast; a new weapon fires after a
+# player's weapon-change time (seconds); aliens drop rather than climb down where both lead to the same place;
+# tall bots (the Predalien) keep out of passages lower than they are
+splashsafe = 1
+switchtime = 0.7
+preferdrops = 1
+headroom = 1
 
 # Follow the server's alien lifecycle option (facehugger -> chestburster -> adult)
 lifecycle = 1
 
-# Game types with bots (Overrun and Evac never have bots)
+# Game types with bots (Overrun never has bots)
 deathmatch = 1
 teamdeathmatch = 1
 survivor = 1
 hunt = 1
+evac = 1
+# Evac with fill: the attackers' share of players + bots (0.5 = even teams; 0.56 with fill 9 = 4 defenders, 5 attackers)
+evacattackers = 0.5
 
 # Kills by and of bots count on the scores
 score = 1

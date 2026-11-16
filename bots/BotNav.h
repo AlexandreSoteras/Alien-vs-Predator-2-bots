@@ -47,6 +47,7 @@ struct NavLink
     Vec3 enter;      // floor point to stand on before climbing
     Vec3 exit;       // floor point to step off to at the other end
     Vec3 normal;     // climbs: the wall's normal (horizontal)
+    float head;      // clear height at the portal ('he' lines; 1e9 = not written: at least the graph's agent + 32)
 };
 
 struct NavNode
@@ -109,6 +110,10 @@ public:
 
     // Ladder links are skipped by FindPath and RandomReachable unless enabled.
     void UseLadders(bool use);
+    // Removes the climb-down links (Aliens walking down a wall) that have a drop or jump between the same two
+    // waypoints: the drop gets there the same, and bots stuck at a wall's lip starting a climb-down (evac_fury151's
+    // attacker platforms). Returns how many were removed.
+    int PreferDrops();
 
     // Start points the generator found cut off from the main play area, for walkers (Marines, Predators)
     // or for climbers (Aliens).
@@ -123,11 +128,18 @@ public:
     int BlockBox(const Vec3& mn, const Vec3& mx, int* linksBlocked = 0);
     void ClearBlocks();
     bool IsBlocked(int node) const { return node >= 0 && node < (int)m_blocked.size() && m_blocked[node] != 0; }
+    // A bot taller than the graph's agent (120: the Predalien is 140) skips waypoints and links with less clear
+    // height ('hn' / 'he' lines of the .nav) in FindPath and ReachableCount; 0 = no filter. Set it around a search.
+    void SetAgentHeight(float h) { m_agentHeight = h; }
+    float NodeHead(int node) const { return node >= 0 && node < (int)m_nodeHead.size() ? m_nodeHead[node] : 1e9f; }
+    int LowNodes() const { int n = 0; for (size_t i = 0; i < m_nodeHead.size(); ++i) n += m_nodeHead[i] < 1e8f; return n; }
 
 private:
     bool m_useLadders;
     mutable int m_lastExpanded;
     std::vector<char> m_blocked;
+    std::vector<float> m_nodeHead;   // clear height per waypoint ('hn' lines; 1e9 elsewhere)
+    float m_agentHeight;             // SetAgentHeight
     struct BadSpawn { Vec3 pos; bool walkers, aliens; };
     std::vector<BadSpawn> m_badSpawns;
     std::vector<std::string> m_useDoors;

@@ -32,7 +32,17 @@ NAV = os.path.join(ROOT, "nav")
 LINKS = ["AvP2Serv.exe", "server.dll", "ltmsg.dll", "libGeoIP-1.dll", "AVP2.REZ", "SOUNDS.REZ", "MULTI.REZ",
          "AVP2DLL.REZ", "AVP2L.REZ", "AVP2P.REZ", "AVP2P1.REZ", "AVP2P5.REZ",
          "LITHSERVER.REZ"]  # not loaded (customrez.txt loads botmod only): MspClient reads the MSP constant from it
-GAME_TYPES = {"dm": ("Deathmatch", 1), "tdm": ("TeamDeathmatch", 2), "surv": ("Survivor", 4), "hunt": ("Hunt", 3)}
+GAME_TYPES = {"dm": ("Deathmatch", 1), "tdm": ("TeamDeathmatch", 2), "surv": ("Survivor", 4), "hunt": ("Hunt", 3),
+              "evac": ("Evac", 6)}
+# maps outside worlds\multi\dm (the MSP pack's Evac maps)
+WORLD_DIRS = {"evac_": "evac", "suk-hadleyshope": "evac"}
+
+
+def world_path(mapname):
+    for prefix, folder in WORLD_DIRS.items():
+        if mapname.lower().startswith(prefix):
+            return "worlds\\multi\\" + folder + "\\" + mapname
+    return "worlds\\multi\\dm\\" + mapname
 # the 9 Deathmatch maps of the balance measurements
 MAP_SETS = {"bal9": "dm_bunker,dm_compound,dm_dropzone,dm_fury151,dm_leadworks,dm_outpost4,dm_quarantine,"
                     "dm_reservoir,dm_stronghold"}
@@ -78,7 +88,7 @@ def setup(n, mapname, bots_cfg, lto, gametype="dm", ff=None, timelimit=120, life
         shutil.copyfile(os.path.join(GAME, f), os.path.join(d, f))
     open(os.path.join(d, "customrez.txt"), "w", newline="\r\n").write('[Rez]\nRez0="botmod"\n')
     port = 27900 + n
-    cfg = server_config(os.path.join(GAME, "ServerData", "unnamed.txt"), f"worlds\\multi\\dm\\{mapname}", port, gametype, ff, timelimit, lifecycle)
+    cfg = server_config(os.path.join(GAME, "ServerData", "unnamed.txt"), world_path(mapname), port, gametype, ff, timelimit, lifecycle)
     open(os.path.join(d, "ServerData", "farm.txt"), "w", encoding="latin-1", newline="").write(cfg)
     shutil.copyfile(lto, os.path.join(d, "botmod", "object.lto"))
     for old in os.listdir(os.path.join(d, "botnav")):

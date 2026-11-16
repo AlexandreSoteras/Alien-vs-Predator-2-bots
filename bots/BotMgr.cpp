@@ -15,6 +15,7 @@
 #include "AIActionMisc.h"
 #include "AISenseMgr.h"
 #include "CharacterMovement.h"
+#include "ContainerCodes.h"
 #include "CharacterAnimation.h"
 #include "CharacterAnimationDefs.h"
 #include "AnimationButeMgr.h"
@@ -56,6 +57,7 @@
 #include <string.h>
 #include <string>
 #include <map>
+#include <set>
 #include <vector>
 #include <algorithm>
 
@@ -261,7 +263,8 @@ struct CbHideState
 struct Bot
 {
     BotSpecies species;
-    int slot;              // 1..n within its species
+    int slot;              // 1..n within its species, unique among its bots (it names the bot)
+    int classSlot;         // picks the class (ClassFor): the slot the bot was created with, kept when it changes species
     std::string name;      // current object name (unique per spawn)
     LTSmartLink hObj;
     bool alive;
@@ -332,6 +335,7 @@ struct Bot
     int stuckCount;        // consecutive stuck reports
     int offGraph;          // consecutive status reports far from any waypoint
     int survTeam;          // Survivor: 0 survivor, 1 mutant
+    int lives;             // Evac: lives left this round (the game's TM_DefenderLives / TM_AttackerLives; 0 = waits for the next round)
     int survScore;         // Survivor: the score a player would have (shown on the bot's scoreboard row)
     // Hunt: survTeam is the role (0 hunter, 1 prey); a live bot that swaps roles respawns at switchAt
     int pendingRole;
@@ -357,6 +361,10 @@ struct Bot
     CbHideState cbh;           // chestburster hiding (reset at each spawn)
     // debug lines of the player rules (BotMgr_LikePlayer)
     LTFLOAT burnLogAt;     // next BURN line allowed (one per second while burning)
+    LTFLOAT splashLogAt;   // next SPLASHHOLD line allowed (BotMgr_SplashSafe)
+    bool rowResend;        // its scoreboard row was just added: send its values again at the next row tick
+    std::string handWeapon; // the weapon in hand at the last shot attempt (BotMgr_OnFire)
+    LTFLOAT weaponReadyAt; // a weapon just taken fires from then on (bots.cfg switchtime)
     LTFLOAT recoilLogAt;   // next RECOILFIRE line allowed
     int recoilFires;       // fire actions started while recoiling, this life
     const BotClass* cls;       // class of the current spawn (0 = the species' template)
@@ -425,6 +433,10 @@ struct Config
     bool seecloak; // bots see cloaked Predators as players do (BotMgr_CloakSeeFactor)
     bool smallSight; // bots notice small targets more slowly (BotMgr_SizeSeeFactor)
     bool survGroup;  // Survivor: survivors regroup and hold together (BotMgr_SurvivorDest)
+    bool splashSafe; // no splash shot whose straight line meets something inside its blast (BotMgr_SplashSafe)
+    float switchTime; // seconds a newly taken weapon needs before it fires (a player's select animation; 0 = off)
+    bool preferDrops; // no climb-down link where a drop links the same two waypoints (BotNav::PreferDrops)
+    bool headroom;    // bots taller than the graph's agent avoid low waypoints and doorways (hn/he lines)
     bool survHunt;   // Survivor: mutants with nothing to fight go where survivors are heard (BotMgr_SurvivorDest)
     bool huntGroup;  // Hunt: the prey regroup and hold together (BotMgr_SurvivorDest)
     bool huntTrack;  // Hunt: hunters with nothing to fight go where prey are heard (BotMgr_SurvivorDest)
@@ -441,6 +453,9 @@ struct Config
     bool listbots;   // bots count as players in the server list (GameSpy/master server replies)
     bool survivor;   // bots in Survivor (the races of the server's Survivor settings)
     bool hunt;       // bots in Hunt (the server's hunter and prey races)
+    bool evac;       // bots in Evac (the server's defender and attacker races)
+    float evacAttackers; // Evac with 'fill': the share of the attackers among players + bots (0.5 = even teams)
+    bool evacGroup;   // Evac: defender bots go to the zone together (regroup, the lead waits for the others)
     bool lifecycle;  // follow the server's alien lifecycle option (facehugger -> chestburster -> adult)
     bool hugBody;    // keep a bot facehugger's body awake until its chestburst (as a hugging player does)
     bool testSleepBody; // test aid: put a hugged body to sleep at the attach (what no client nearby does)
@@ -532,6 +547,9 @@ void Log(const char* fmt, ...);
 struct Bot;
 int SurvivorRace(bool mutant);      // Species value, or -1
 int HuntRace(int role);             // Species value of hunters (0) or prey (1), or -1
+int EvacRace(int role);             // Species value of the Evac defenders (0) or attackers (1), or -1
+int EvacRole(const Bot& b);         // the Evac team of a bot (0 defender, 1 attacker), -1 for neither
+bool EvacMode();
 int HuntJoinRole();                 // role a new bot takes in Hunt (the players' join rule)
 bool LifecycleOn();                 // the server's lifecycle option applies to bots now
 void LifecycleBurst(Bot& b, const LTVector& pos, const LTRotation& rot, int hostSet, bool fallback = false);
@@ -599,6 +617,10 @@ void LoadConfig()
     g_cfg.seecloak = true;
     g_cfg.smallSight = true;
     g_cfg.survGroup = true;
+    g_cfg.splashSafe = true;
+    g_cfg.switchTime = 0.7f;
+    g_cfg.preferDrops = true;
+    g_cfg.headroom = true;
     g_cfg.survHunt = true;
     g_cfg.huntGroup = false;
     g_cfg.huntTrack = false;
@@ -615,6 +637,9 @@ void LoadConfig()
     g_cfg.listbots = false;
     g_cfg.survivor = true;
     g_cfg.hunt = true;
+    g_cfg.evac = true;
+    g_cfg.evacAttackers = 0.5f;
+    g_cfg.evacGroup = false;  // measured: no better (eg_on vs eg_off: defenders 42 vs 43 %)
     g_cfg.lifecycle = true;
     g_cfg.hugBody = true;
     g_cfg.testSleepBody = false;
@@ -668,6 +693,10 @@ void LoadConfig()
         else if (!_stricmp(key, "seecloak")) g_cfg.seecloak = value != 0.0f;
         else if (!_stricmp(key, "smallsight")) g_cfg.smallSight = value != 0.0f;
         else if (!_stricmp(key, "survgroup")) g_cfg.survGroup = value != 0.0f;
+        else if (!_stricmp(key, "splashsafe")) g_cfg.splashSafe = value != 0.0f;
+        else if (!_stricmp(key, "switchtime")) g_cfg.switchTime = value < 0.0f ? 0.0f : value;
+        else if (!_stricmp(key, "preferdrops")) g_cfg.preferDrops = value != 0.0f;
+        else if (!_stricmp(key, "headroom")) g_cfg.headroom = value != 0.0f;
         else if (!_stricmp(key, "survhunt")) g_cfg.survHunt = value != 0.0f;
         else if (!_stricmp(key, "huntgroup")) g_cfg.huntGroup = value != 0.0f;
         else if (!_stricmp(key, "hunttrack")) g_cfg.huntTrack = value != 0.0f;
@@ -683,6 +712,9 @@ void LoadConfig()
         else if (!_stricmp(key, "listbots")) g_cfg.listbots = value != 0.0f;
         else if (!_stricmp(key, "survivor")) g_cfg.survivor = value != 0.0f;
         else if (!_stricmp(key, "hunt")) g_cfg.hunt = value != 0.0f;
+        else if (!_stricmp(key, "evac")) g_cfg.evac = value != 0.0f;
+        else if (!_stricmp(key, "evacgroup")) g_cfg.evacGroup = value != 0.0f;
+        else if (!_stricmp(key, "evacattackers")) g_cfg.evacAttackers = value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value;
         else if (!_stricmp(key, "lifecycle")) g_cfg.lifecycle = value != 0.0f;
         else if (!_stricmp(key, "hugbody")) g_cfg.hugBody = value != 0.0f;
         else if (!_stricmp(key, "testsleepbody")) g_cfg.testSleepBody = value != 0.0f;
@@ -882,11 +914,15 @@ bool EnsureMPWeapon(const MPWeaponDef& def)
     if (g_cfg.playerHits)
     {
         const AMMO* ammo = g_pWeaponMgr->GetAmmo(barrel->nAmmoType);
-        if (ammo && ammo->nAreaDamage > 0 && (LTFLOAT)ammo->nAreaDamageRadius > w.fMinFireRange)
+        // with 'splashsafe', 64 more: the blast takes whatever box touches its sphere (FindObjectsTouchingSphere) and
+        // the shot meets the target's near side, so a target just outside the radius still left the bot holding its
+        // fire (BotMgr_SplashSafe) instead of taking another weapon
+        const float blast = ammo ? (float)ammo->nAreaDamageRadius + (g_cfg.splashSafe ? 64.0f : 0.0f) : 0.0f;
+        if (ammo && ammo->nAreaDamage > 0 && blast > w.fMinFireRange)
         {
-            Log("MPWEAPON %s: no shot inside its own blast (min fire range %.0f -> %d, ammo %s)", def.mp,
-                w.fMinFireRange, ammo->nAreaDamageRadius, ammo->szName);
-            w.fMinFireRange = (LTFLOAT)ammo->nAreaDamageRadius;
+            Log("MPWEAPON %s: no shot inside its own blast (min fire range %.0f -> %.0f, ammo %s)", def.mp,
+                w.fMinFireRange, blast, ammo->szName);
+            w.fMinFireRange = blast;
             if (w.fMinIdealRange < w.fMinFireRange)
                 w.fMinIdealRange = w.fMinFireRange;
             if (w.fMaxIdealRange < w.fMinIdealRange)
@@ -1064,6 +1100,7 @@ void RegisterAllWeapons()
 
 // species of the bot being placed by Spawn (FindStartPoint skips its cut-off start points), -1 otherwise
 int g_spawningSpecies = -1;
+int g_splashHeld = 0;  // splash shots held since the world started (BotMgr_SplashSafe), in the STATUS line
 
 // Predator energy (WEAPONS.TXT): the Predator_Energy pool (54), 6 per plasma pistol shot (Predator_Pistol_Ammo_MP),
 // 3 + 2 + 3 to charge the shoulder cannon to levels 0, 1, 2, cloak 5 to switch on then 0.1/s (server cvars
@@ -1817,6 +1854,11 @@ bool Spawn(Bot& b)
         b.stage = 0;
         b.lifeClass = 0;
     }
+    // a Predalien (140 tall, the graph's agent is 120) does not spawn where every way out is lower (dm_hanger's room at
+    // floor -544: Predaliens spawned there never got out)
+    const BotClass* spawnCls = b.forcedClass ? b.forcedClass : (g_cfg.classes ? ClassFor(b.species, b.classSlot) : 0);
+    const bool tall = g_cfg.headroom && b.stage == 0 && spawnCls && !_stricmp(spawnCls->name, "Predalien") &&
+                      g_nav.LowNodes() > 0;
     for (int attempt = 0; attempt < 12 && !b.placeAt; ++attempt)
     {
         g_spawningSpecies = b.species;
@@ -1828,7 +1870,15 @@ bool Spawn(Bot& b)
         g_pLTServer->GetObjectPos(sp2->m_hObject, &p2);
         start = sp2;
         pos = p2;
-        if (!g_nav.IsBadSpawn(Vec3(p2.x, p2.y, p2.z), b.species == BOT_ALIEN))
+        bool bad = g_nav.IsBadSpawn(Vec3(p2.x, p2.y, p2.z), b.species == BOT_ALIEN);
+        if (!bad && tall)
+        {
+            g_nav.SetAgentHeight(140.0f);
+            const int k = g_nav.Nearest(Vec3(p2.x, p2.y - 70.0f, p2.z));
+            bad = k < 0 || g_nav.ReachableCount(k, 200, 0, true) < 200;
+            g_nav.SetAgentHeight(0.0f);
+        }
+        if (!bad)
             break;
     }
     if (start && !b.placeAt)
@@ -1840,7 +1890,7 @@ bool Spawn(Bot& b)
         b.placeAt = false;
     }
 
-    const BotClass* cls = b.forcedClass ? b.forcedClass : (g_cfg.classes ? ClassFor(b.species, b.slot) : 0);
+    const BotClass* cls = b.forcedClass ? b.forcedClass : (g_cfg.classes ? ClassFor(b.species, b.classSlot) : 0);
     if (b.stage == 1)
         cls = &kHugger;
     else if (b.stage == 2)
@@ -1970,6 +2020,10 @@ bool Spawn(Bot& b)
     b.loseSince = 0.0f;
     b.lastHp = 0.0f;
     b.burnLogAt = 0.0f;
+    b.splashLogAt = 0.0f;
+    b.rowResend = false;
+    b.weaponReadyAt = 0.0f;
+    b.handWeapon.clear();   // a new life starts with its weapon in hand
     b.recoilLogAt = 0.0f;
     b.recoilFires = 0;
     b.cm.Reset();
@@ -2082,6 +2136,11 @@ bool HuntMode()
     return GameTypeNow() == MP_HUNT;
 }
 
+bool EvacMode()
+{
+    return GameTypeNow() == MP_EVAC;
+}
+
 // Survivor outside play (no game yet, the interlude after the first mutant, the end of a round): nobody fights
 static bool SurvivorPause()
 {
@@ -2098,6 +2157,9 @@ bool GameTypeAllowed()
         return g_cfg.survivor && RaceSpecies(SurvivorRace(false)) >= 0 && RaceSpecies(SurvivorRace(true)) >= 0;
     if (t == MP_HUNT)
         return g_cfg.hunt && RaceSpecies(HuntRace(0)) >= 0 && RaceSpecies(HuntRace(1)) >= 0;
+    if (t == MP_EVAC)
+        return g_cfg.evac && RaceSpecies(EvacRace(0)) >= 0 && RaceSpecies(EvacRace(1)) >= 0 &&
+               RaceSpecies(EvacRace(0)) != RaceSpecies(EvacRace(1));
     return (t == MP_DM && g_cfg.dm) || (t == MP_TEAMDM && g_cfg.teamdm);
 }
 
@@ -2467,11 +2529,29 @@ int NextSlot(BotSpecies sp)
     return slot;
 }
 
+// A bot that changes species (Hunt role swap or balance, Survivor mutation or new round) takes the first slot
+// of its new species that no other bot holds. The slot names the bot (avp2bot_<species><slot>, and the server
+// extension's per-slot names): keeping the old one let two bots show as the same "[B] Hicks" in Hunt.
+// classSlot stays, so the classes still vary as before (otherwise Hunt hunters, always slots 1-2, would only
+// ever be Maurauder and Striker).
+void SetBotSpecies(Bot& b, BotSpecies sp)
+{
+    if (b.species == sp)
+        return;
+    const BotSpecies old = b.species;
+    const int from = b.slot;
+    b.species = sp;
+    b.slot = 0;  // NextSlot never returns 0, so it skips this bot
+    b.slot = NextSlot(sp);
+    Log("SLOT %s%d becomes %s%d", kSpecies[old].tag, from, kSpecies[sp].tag, b.slot);
+}
+
 void AddBot(BotSpecies sp, const BotClass* forced, LTFLOAT when)
 {
     Bot b;
     b.species = sp;
     b.slot = NextSlot(sp);
+    b.classSlot = b.slot;
     b.alive = false;
     b.goalsSent = false;
     b.respawnTime = when;
@@ -2479,6 +2559,7 @@ void AddBot(BotSpecies sp, const BotClass* forced, LTFLOAT when)
     b.deaths = 0;
     b.scoreSet = -1;
     b.survTeam = 0;
+    b.lives = 0;
     b.survScore = 0;
     b.pendingRole = -1;
     b.switchAt = 0.0f;
@@ -2534,6 +2615,10 @@ void AddBot(BotSpecies sp, const BotClass* forced, LTFLOAT when)
     b.skill = -1.0f;
     b.survHoldUntil = 0.0f;
     b.burnLogAt = 0.0f;
+    b.splashLogAt = 0.0f;
+    b.rowResend = false;
+    b.weaponReadyAt = 0.0f;
+    b.handWeapon.clear();   // a new life starts with its weapon in hand
     b.recoilLogAt = 0.0f;
     b.recoilFires = 0;
     b.cls = 0;
@@ -2874,6 +2959,110 @@ struct BotScoreAccess
         return role;
     }
 
+    // --- Evac (ClientKilledMsg_Evac, Update_Evac) ----------------------------------------------------
+    // Two teams, by race: the defenders must get one of theirs into the evac zone and keep him there for 11.5 s
+    // (MPMGR_EVAC_DELAY); the attackers win when the defenders are out of lives or the time runs out. Every
+    // player has TM_DefenderLives / TM_AttackerLives lives a round; kills give no frags, only streaks.
+    static int EvacRaceOf(int role)
+    {
+        MultiplayerMgr* mp = Mgr();
+        return mp ? (int)(role ? mp->m_GameInfo.m_nTM_AttackerRace : mp->m_GameInfo.m_nTM_DefenderRace) : -1;
+    }
+
+    // the evacuation state (0, MP_EVAC_COUNTDOWN, MP_EVAC_CANCEL, MP_EVAC_COMPLETE) and a race's team score
+    // (MPMGR_EVAC_PTS a round won), for the EVACSTATE / EVAC round lines
+    static int EvacState()
+    {
+        MultiplayerMgr* mp = Mgr();
+        return mp ? (int)mp->m_nEvacState : 0;
+    }
+
+    static int TeamScore(int race)
+    {
+        MultiplayerMgr* mp = Mgr();
+        return mp && race >= 0 && race < MAX_TEAMS ? (int)mp->m_TeamData[race].m_nScore : 0;
+    }
+
+    // a server extension's camera client (ServerExt_IsCameraClient) never spawns: in Evac it must not count as a
+    // living team member (START_GAME and each new round give every client lives), or a round never ends
+    static void EvacCameraNoLives()
+    {
+        MultiplayerMgr* mp = Mgr();
+        for (int i = 0; mp && i < MAX_CLIENTS; ++i)
+            if (mp->m_ClientData[i].m_hClient && ServerExt_IsCameraClient(mp->m_ClientData[i].m_hClient) &&
+                mp->m_ClientData[i].m_nLives)
+            {
+                mp->m_ClientData[i].m_nLives = 0;
+                mp->m_ClientData[i].m_nUpdateFlags |= MP_CLIENT_UPDATE_LIVES;
+            }
+    }
+
+    static int EvacLivesOf(int role)
+    {
+        MultiplayerMgr* mp = Mgr();
+        return mp ? (int)(role ? mp->m_GameInfo.m_nTM_AttackerLives : mp->m_GameInfo.m_nTM_DefenderLives) : 0;
+    }
+
+    // a human killed by a bot in Evac: one life less (the game's handling is skipped, hook 'botkill')
+    static void EvacPlayerKilled(MultiplayerMgr* mp, int v, CAI* killer)
+    {
+        MPMgrData& victim = mp->m_ClientData[v];
+        if (victim.m_nLives > 0)
+            victim.m_nLives--;
+        victim.m_nUpdateFlags |= MP_CLIENT_UPDATE_LIVES;
+        Bot* kb = BotOf(killer->m_hObject);
+        const bool teamKill = SpeciesOf(killer) == (int)victim.m_Data.m_nCharacterClass;
+        if (kb)
+        {
+            kb->rowConFrags = teamKill ? 0 : kb->rowConFrags + 1;
+            RowUpdate(*kb);
+            if (kb->rowId)
+                KillMessage(teamKill ? MP_SERV_MSG_KILLED_TEAMMATE : MP_SERV_MSG_KILLED_SOMEONE, kb->rowId,
+                            victim.m_nClientID);
+        }
+        mp->SetUpdateGameServ();
+        Log("EVAC player %u killed by %s, %d lives left", (unsigned)victim.m_nClientID,
+            ObjectLabel(killer->m_hObject).c_str(), (int)victim.m_nLives);
+    }
+
+    // a bot died in Evac: one life less (ClientKilledMsg_Evac)
+    static void EvacBotKilled(MultiplayerMgr* mp, Bot& b, HOBJECT hKiller)
+    {
+        if (b.lives > 0)
+            b.lives--;
+        b.rowConFrags = 0;
+        CCharacter* other = hKiller ? dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hKiller)) : LTNULL;
+        if (!other || hKiller == b.hObj.GetHOBJECT())
+            KillMessage(MP_SERV_MSG_KILLED_HIMSELF, b.rowId, 0);
+        else
+        {
+            CPlayerObj* pk = dynamic_cast<CPlayerObj*>(other);
+            const int k = pk ? mp->FindClient(pk->GetClient()) : -1;
+            Bot* kb = BotOf(hKiller);
+            const bool teamKill = SpeciesOf(other) == kSpecies[b.species].startClass;
+            if (k >= 0)
+            {
+                MPMgrData& killer = mp->m_ClientData[k];
+                if (teamKill)
+                    killer.m_nConsecutiveFrags = 0;
+                else
+                    mp->IncrementConsecutiveFrags(k);
+                killer.m_nUpdateFlags |= MP_CLIENT_UPDATE_CONFRAGS;
+            }
+            else if (kb)
+            {
+                kb->rowConFrags = teamKill ? 0 : kb->rowConFrags + 1;
+                RowUpdate(*kb);
+            }
+            const uint32 kid = k >= 0 ? mp->m_ClientData[k].m_nClientID : (kb ? kb->rowId : 0);
+            if (kid && b.rowId)
+                KillMessage(teamKill ? MP_SERV_MSG_KILLED_TEAMMATE : MP_SERV_MSG_KILLED_SOMEONE, kid, b.rowId);
+        }
+        RowUpdate(b);
+        mp->SetUpdateGameServ();
+        Log("EVAC %s killed by %s, %d lives left", b.name.c_str(), ObjectLabel(hKiller).c_str(), b.lives);
+    }
+
     static void PlayerKilled(HCLIENT hVictim, CAI* killer)
     {
         MultiplayerMgr* mp = Mgr();
@@ -2892,6 +3081,11 @@ struct BotScoreAccess
         if (mp->m_GameInfo.m_nGameType.Get() == MP_HUNT)
         {
             HuntPlayerKilled(mp, v, killer);
+            return;
+        }
+        if (mp->m_GameInfo.m_nGameType.Get() == MP_EVAC)
+        {
+            EvacPlayerKilled(mp, v, killer);
             return;
         }
         const int value = mp->GetClientScore(victim.m_nClientID);
@@ -2929,12 +3123,17 @@ struct BotScoreAccess
                 b.survTeam = role;
                 const int sp = RaceSpecies(HuntRaceOf(role));
                 if (sp >= 0)
-                    b.species = (BotSpecies)sp;
+                    SetBotSpecies(b, (BotSpecies)sp);
                 b.forcedClass = 0;
                 b.respawnTime = g_pLTServer->GetTime() + 2.0f;
                 ScoreRowRemove(b);
                 Log("HUNT %s comes back as %s", b.name.c_str(), role ? "prey" : "hunter");
             }
+            return;
+        }
+        if (mp->m_GameInfo.m_nGameType.Get() == MP_EVAC)
+        {
+            EvacBotKilled(mp, b, hKiller);
             return;
         }
         if (mp->m_GameInfo.m_nGameType.Get() == MP_SURVIVOR)
@@ -2946,7 +3145,7 @@ struct BotScoreAccess
                 const int sp = RaceSpecies(mp->m_GameInfo.m_nSurv_MutateRace);
                 b.survTeam = 1;
                 if (sp >= 0)
-                    b.species = (BotSpecies)sp;
+                    SetBotSpecies(b, (BotSpecies)sp);
                 b.forcedClass = 0;
                 b.respawnTime = g_pLTServer->GetTime() + 2.0f;
                 ScoreRowRemove(b);   // its row comes back with the new class at the respawn
@@ -3080,6 +3279,7 @@ struct BotScoreAccess
         hWrite->WriteDWord(b.rowId);
         g_pLTServer->EndMessage(hWrite);
         RowUpdate(b);  // the ADD message carries no frags or score: a new row would show 0 until the next change
+        b.rowResend = true;  // and again at the next row tick (CheckRows)
         Log("ROW add %s id=%u \"%s\"", b.name.c_str(), (unsigned)b.rowId, b.display.c_str());
     }
 
@@ -3098,12 +3298,17 @@ struct BotScoreAccess
     {
         if (!b.rowId)
             return;
+        // Evac rows show the lives left this round, as the players' (MP_CLIENT_UPDATE_LIVES comes last)
+        const bool lives = Mgr() && Mgr()->m_GameInfo.m_nGameType.Get() == MP_EVAC;
         HMESSAGEWRITE hWrite = g_pLTServer->StartMessage(LTNULL, MID_MPMGR_UPDATE_CLIENT);
         hWrite->WriteDWord(b.rowId);
-        hWrite->WriteByte(MP_CLIENT_UPDATE_FRAGS | MP_CLIENT_UPDATE_CONFRAGS | MP_CLIENT_UPDATE_SCORE);
+        hWrite->WriteByte(MP_CLIENT_UPDATE_FRAGS | MP_CLIENT_UPDATE_CONFRAGS | MP_CLIENT_UPDATE_SCORE |
+                          (lives ? MP_CLIENT_UPDATE_LIVES : 0));
         hWrite->WriteWord((uint16)(int16)b.rowFrags);
         hWrite->WriteByte((uint8)(b.rowConFrags > 100 ? 100 : b.rowConFrags));
         hWrite->WriteWord((uint16)(int16)b.rowScore);
+        if (lives)
+            hWrite->WriteByte((uint8)(b.lives < 0 ? 0 : b.lives));
         g_pLTServer->EndMessage2(hWrite, MESSAGE_NAGGLE);
     }
 
@@ -3167,7 +3372,8 @@ struct BotScoreAccess
             hWrite->WriteWord((uint16)(int16)b.rowFrags);
             hWrite->WriteByte((uint8)(b.rowConFrags > 100 ? 100 : b.rowConFrags));
             hWrite->WriteWord((uint16)(int16)b.rowScore);
-            hWrite->WriteByte(1);                                   // lives
+            hWrite->WriteByte((uint8)(Mgr() && Mgr()->m_GameInfo.m_nGameType.Get() == MP_EVAC
+                                          ? (b.lives < 0 ? 0 : b.lives) : 1));   // lives
             hWrite->WriteByte(1);                                   // verified
             hWrite->WriteByte(0);                                   // observing
             --n;
@@ -3186,8 +3392,17 @@ struct BotScoreAccess
         for (int i = (int)g_bots.size() - 1; i >= 0 && !RowRoom(0); --i)
             RowRemove(g_bots[i]);
         for (size_t i = 0; i < g_bots.size(); ++i)
+        {
+            // the clients did not take the update sent with the ADD (a real-client Evac test: every bot row showed 0
+            // lives in a map's first round, rows added at the round start): send the values again a tick later
+            if (g_bots[i].rowId && g_bots[i].rowResend && g_pLTServer->GetTime() - g_bots[i].spawnTime > 0.5f)
+            {
+                RowUpdate(g_bots[i]);
+                g_bots[i].rowResend = false;
+            }
             if (!g_bots[i].rowId && g_bots[i].scoreSet >= 0)
                 RowAdd(g_bots[i]);
+        }
     }
 
     // connected players per species (index = Species value); returns the total
@@ -3234,11 +3449,31 @@ void ApplyFill()
     if (total < 0)
         total = 0;
     int want[BOT_SPECIES_COUNT] = {0, 0, 0};
+    // Evac: the two teams split the fill by 'evacattackers' (players count in their team); the bots make up each
+    // team's share, then the difference
+    const int defSp = EvacMode() ? RaceSpecies(EvacRace(0)) : -1, attSp = EvacMode() ? RaceSpecies(EvacRace(1)) : -1;
+    if (defSp >= 0 && attSp >= 0 && defSp != attSp && total > 0)
+    {
+        const int attShare = (int)floorf(g_cfg.fill * g_cfg.evacAttackers + 0.5f);
+        const int hDef = humans[EvacRace(0)], hAtt = humans[EvacRace(1)];
+        int att = attShare - hAtt, def = (g_cfg.fill - attShare) - hDef;
+        if (att < 0) att = 0;
+        if (def < 0) def = 0;
+        while (att + def > total)
+            (att * (g_cfg.fill - attShare) > def * attShare ? att : def)--;
+        while (att + def < total)
+            (att * (g_cfg.fill - attShare) < def * attShare ? att : def)++;
+        want[attSp] = att;
+        want[defSp] = def;
+        total = 0;  // done
+    }
     for (int k = 0; k < total; ++k)
     {
         int best = -1, bestCount = 0;
         for (int s = 0; s < BOT_SPECIES_COUNT; ++s)
         {
+            if (EvacMode() && s != RaceSpecies(EvacRace(0)) && s != RaceSpecies(EvacRace(1)))
+                continue;   // Evac: the defender and attacker races only
             const int count = humans[kSpecies[s].startClass] + want[s];
             if (best < 0 || count < bestCount)
             {
@@ -3253,7 +3488,8 @@ void ApplyFill()
         if (SurvivorMode() || HuntMode())
             Log("FILL %d players, %d bots (their races follow the game's rules)", nHumans, total);
         else
-            Log("FILL %d players, %d bots: %d marines, %d aliens, %d predators", nHumans, total, want[BOT_MARINE],
+            Log("FILL %d players, %d bots: %d marines, %d aliens, %d predators", nHumans,
+                want[BOT_MARINE] + want[BOT_ALIEN] + want[BOT_PREDATOR], want[BOT_MARINE],
                 want[BOT_ALIEN], want[BOT_PREDATOR]);
         g_lastHumans = nHumans;
     }
@@ -3371,7 +3607,7 @@ bool BotMgr_HuntBalance(int surplus)
         pick->survTeam = 1 - from;
         const int sp = RaceSpecies(HuntRace(pick->survTeam));
         if (sp >= 0)
-            pick->species = (BotSpecies)sp;
+            SetBotSpecies(*pick, (BotSpecies)sp);
         pick->forcedClass = 0;
     }
     Log("HUNT balance: %s becomes %s", pick->name.c_str(), from ? "a hunter" : "prey");
@@ -3396,7 +3632,7 @@ void BotMgr_SurvivorNewRound(bool lastRound)
         }
         if (b.survTeam && sp >= 0)
         {
-            b.species = (BotSpecies)sp;
+            SetBotSpecies(b, (BotSpecies)sp);
             b.forcedClass = 0;
             ScoreRowRemove(b);
         }
@@ -3405,6 +3641,365 @@ void BotMgr_SurvivorNewRound(bool lastRound)
         b.respawnTime = lastRound ? now + 30.0f : now + 0.2f;
     }
     Log("SURVIVOR new round%s: %d bots back as survivors", lastRound ? " (last)" : "", (int)g_bots.size());
+}
+
+// --- Evac ---------------------------------------------------------------------------------------------------------
+// The defender race must get one of its players into the evac zone (an EvacZone volume, container CC_EVACZONE) and
+// keep one there for 11.5 s; the attackers win by taking all the defenders' lives or holding out until the time
+// limit. Rounds, lives per round, and players waiting (observing) while out of lives or between rounds
+// (MultiplayerMgr::Update_Evac). Bots count in the teams, the lives and the zone through hooks 'evaccount',
+// 'evacstart', 'evacround', 'evacalive' and 'evaczone'; a bot's team is its species.
+namespace {
+struct EvacZoneInfo
+{
+    LTVector mn, mx, center;
+    std::vector<int> inside;   // waypoints in the zone (floor under its box)
+    std::vector<int> around;   // waypoints 300-1200 units from it: where attackers wait for the defenders
+    std::vector<int> route;    // waypoints on the defenders' ways from their start points to it (the middle part)
+};
+std::vector<EvacZoneInfo> g_evacZones;
+
+int EvacSubState()
+{
+    MultiplayerMgr* mp = g_pGameServerShell ? g_pGameServerShell->GetMultiplayerMgr() : LTNULL;
+    return mp ? (int)mp->GetServerSubState() : -1;
+}
+
+// players wait in observe mode out of lives or between rounds; so do bots
+bool EvacCanSpawn(const Bot& b)
+{
+    return EvacSubState() == MPMGR_SUBSTATE_TM_GOING && b.lives > 0;
+}
+
+// the game's test for players (Update_Evac): the containers at the position
+bool InEvacZone(const LTVector& pos)
+{
+    HOBJECT hContainers[CM_MAX_CONTAINERS];
+    LTVector p = pos;
+    const uint32 n = g_pLTServer->GetPointContainers(&p, hContainers, CM_MAX_CONTAINERS);
+    for (uint32 i = 0; i < n; ++i)
+    {
+        uint16 code = 0;
+        if (g_pLTServer->GetContainerCode(hContainers[i], &code) && (ContainerCode)code == CC_EVACZONE)
+            return true;
+    }
+    return false;
+}
+
+void FindEvacZones()
+{
+    g_evacZones.clear();
+    HCLASS hZone = g_pLTServer->GetClass("EvacZone");
+    if (!hZone || !g_navLoaded)
+        return;
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        HOBJECT h = LTNULL;
+        while ((h = pass == 0 ? g_pLTServer->GetNextObject(h) : g_pLTServer->GetNextInactiveObject(h)) != LTNULL)
+        {
+            if (!g_pLTServer->IsKindOf(g_pLTServer->GetObjectClass(h), hZone))
+                continue;
+            LTVector pos, dims;
+            g_pLTServer->GetObjectPos(h, &pos);
+            g_pLTServer->GetObjectDims(h, &dims);
+            EvacZoneInfo z;
+            z.mn = pos - dims;
+            z.mx = pos + dims;
+            z.center = pos;
+            for (int i = 0; i < g_nav.NodeCount(); ++i)
+            {
+                const avp2bots::Vec3& n = g_nav.Node(i).pos;
+                const LTVector q(n.x, n.y + 40.0f, n.z);   // a standing character's centre over the waypoint
+                if (n.x >= z.mn.x && n.x <= z.mx.x && n.z >= z.mn.z && n.z <= z.mx.z && n.y >= z.mn.y - 64.0f &&
+                    n.y <= z.mx.y && InEvacZone(q))
+                    z.inside.push_back(i);
+                else
+                {
+                    const float dx = n.x - pos.x, dz = n.z - pos.z, d = sqrtf(dx * dx + dz * dz);
+                    if (d >= 300.0f && d <= 1200.0f)
+                        z.around.push_back(i);
+                }
+            }
+            if (z.inside.empty())
+            {
+                const int k = g_nav.Nearest(avp2bots::Vec3(pos.x, pos.y - dims.y, pos.z));
+                if (k >= 0)
+                    z.inside.push_back(k);
+            }
+            // the defenders' ways in: walking paths from their start points (team 1, MultiplayerMgr's
+            // FindStartPoint for the defender race) to the zone; attackers wait on their middle part
+            if (!z.inside.empty())
+            {
+                // targets: the waypoints inside nearest its centre first (one of them may sit on a ledge)
+                std::vector<std::pair<float, int> > byCentre;
+                for (size_t k = 0; k < z.inside.size(); ++k)
+                {
+                    const avp2bots::Vec3& n = g_nav.Node(z.inside[k]).pos;
+                    byCentre.push_back(std::make_pair((n.x - pos.x) * (n.x - pos.x) + (n.z - pos.z) * (n.z - pos.z),
+                                                      z.inside[k]));
+                }
+                std::sort(byCentre.begin(), byCentre.end());
+                std::set<int> seen;
+                for (int pass2 = 0; pass2 < 2; ++pass2)
+                {
+                    HOBJECT hs = LTNULL;
+                    while ((hs = pass2 == 0 ? g_pLTServer->GetNextObject(hs) : g_pLTServer->GetNextInactiveObject(hs)) != LTNULL)
+                    {
+                        GameStartPoint* sp = dynamic_cast<GameStartPoint*>(g_pLTServer->HandleToObject(hs));
+                        if (!sp || !(sp->GetAllowFlags() & STARTPOINT_ALLOW_TEAM_1))
+                            continue;
+                        LTVector sp3;
+                        g_pLTServer->GetObjectPos(hs, &sp3);
+                        const int from = g_nav.Nearest(avp2bots::Vec3(sp3.x, sp3.y - 40.0f, sp3.z));
+                        std::vector<avp2bots::Vec3> pts;
+                        std::vector<int> nodes;
+                        bool found = false;
+                        for (size_t t = 0; t < byCentre.size() && t < 6 && !found && from >= 0; ++t)
+                        {
+                            nodes.clear();
+                            pts.clear();
+                            found = g_nav.FindPath(from, byCentre[t].second, &pts, &nodes, 0, 1, 0, false);
+                        }
+                        if (!found)
+                            continue;
+                        const size_t n = nodes.size();
+                        for (size_t k = n / 5; k + n / 5 < n; ++k)
+                            if (seen.insert(nodes[k]).second)
+                                z.route.push_back(nodes[k]);
+                    }
+                }
+            }
+            Log("EVACZONE %.0f %.0f %.0f .. %.0f %.0f %.0f: %d waypoints inside, %d around, %d on the defenders' ways",
+                z.mn.x, z.mn.y, z.mn.z, z.mx.x, z.mx.y, z.mx.z, (int)z.inside.size(), (int)z.around.size(),
+                (int)z.route.size());
+            g_evacZones.push_back(z);
+        }
+    }
+}
+
+LTVector EvacNodePos(int k, const LTVector& dims)
+{
+    const avp2bots::Vec3& n = g_nav.Node(k).pos;
+    return LTVector(n.x, n.y + dims.y, n.z);
+}
+
+// BotRoam with nothing to fight. Defenders go into the zone and stay there (the countdown runs while one of them
+// is inside); attackers go where a defender was heard (a shot in the last 8 s within 3000 units, steps within
+// 1000), else wait around the zone, where the defenders must come.
+bool EvacDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
+{
+    Bot* b = FindBot(pAI->m_hObject);
+    if (!b || g_evacZones.empty() || EvacSubState() != MPMGR_SUBSTATE_TM_GOING)
+        return false;
+    const int role = EvacRole(*b);
+    if (role < 0)
+        return false;
+    const LTVector p = pAI->GetPosition();
+    const LTVector& dims = pAI->GetDims();
+    const LTFLOAT now = g_pLTServer->GetTime();
+    const EvacZoneInfo* z = &g_evacZones[0];
+    for (size_t i = 1; i < g_evacZones.size(); ++i)
+        if ((g_evacZones[i].center - p).MagSqr() < (z->center - p).MagSqr())
+            z = &g_evacZones[i];
+    if (role == 0)
+    {
+        if (InEvacZone(p))
+        {
+            *pHoldUntil = now + GetRandom(2.0f, 4.0f);
+            return true;
+        }
+        if (z->inside.empty())
+            return false;
+        // Far from the zone, the defenders go there together, as a team of players does: each one alone was
+        // caught on the way (evac_auriga: 0 of 14 rounds reached the zone, the defenders died in the first third
+        // of a 9000-unit way). One more than 800 units from every teammate joins the nearest; the one ahead of the
+        // group (nearer the zone by 500 than a teammate within 1500) waits 2-3 s.
+        const float myZone = (z->center - p).Mag();
+        if (g_cfg.evacGroup && myZone > 1500.0f)
+        {
+            CCharacter* mate = 0;
+            float mateD = 1e9f;
+            bool lead = false;
+            for (CCharacterMgr::CharacterIterator it = g_pCharacterMgr->BeginCharacters();
+                 it != g_pCharacterMgr->EndCharacters(); ++it)
+            {
+                CCharacter* c = *it;
+                if (!c || c == pAI || c->IsDead() || SpeciesOf(c) != EvacRace(0))
+                    continue;
+                const float d = (c->GetPosition() - p).Mag();
+                if (d < mateD)
+                {
+                    mateD = d;
+                    mate = c;
+                }
+                if (d < 1500.0f && (z->center - c->GetPosition()).Mag() > myZone + 500.0f)
+                    lead = true;
+            }
+            if (mate && mateD > 800.0f)
+            {
+                *pDest = mate->GetPosition();
+                if (g_cfg.debug)
+                    Log("EVACDEST %s defender -> regroup with %s (%.0f away)", b->name.c_str(),
+                        ObjectLabel(mate->m_hObject).c_str(), mateD);
+                return true;
+            }
+            if (lead)
+            {
+                *pHoldUntil = now + GetRandom(2.0f, 3.0f);
+                return true;
+            }
+        }
+        *pDest = EvacNodePos(z->inside[GetRandom(0, (int)z->inside.size() - 1)], dims);
+        if (g_cfg.debug)
+            Log("EVACDEST %s defender -> zone (%.0f away)", b->name.c_str(), (*pDest - p).Mag());
+        return true;
+    }
+    const int defRace = EvacRace(0);
+    CCharacter* best = 0;
+    float bestD = 1e9f;
+    CCharacter* nearest = 0;   // the nearest living defender, heard or not
+    float nearestD = 1e9f;
+    bool botDefender = false;  // a defender bot still alive (else only players are left)
+    for (CCharacterMgr::CharacterIterator it = g_pCharacterMgr->BeginCharacters(); it != g_pCharacterMgr->EndCharacters();
+         ++it)
+    {
+        CCharacter* c = *it;
+        if (!c || c == pAI || c->IsDead() || SpeciesOf(c) != defRace)
+            continue;
+        const float d = (c->GetPosition() - p).Mag();
+        if (d < nearestD)
+        {
+            nearestD = d;
+            nearest = c;
+        }
+        botDefender = botDefender || BotMgr_IsBot(c->m_hObject);
+        std::map<HOBJECT, LTFLOAT>::const_iterator shot = g_lastShot.find(c->m_hObject);
+        const bool heardShot = shot != g_lastShot.end() && now - shot->second < 8.0f && d < 3000.0f;
+        if ((heardShot || d < 1000.0f) && d < bestD)
+        {
+            bestD = d;
+            best = c;
+        }
+    }
+    // Nobody heard: attackers also search for the defenders, as players who know where they start and must take
+    // their lives: a third of the picks, all of them once only players are left (a human defender who stayed near his
+    // start was never found: 5 alien bots, 130 s, the round ran out; a real-client test)
+    if (!best && nearest && (!botDefender || GetRandom(0.0f, 1.0f) < 0.33f))
+        best = nearest;
+    // the countdown is announced to everyone (MP_EVAC_COUNTDOWN): attackers rush the zone to stop it
+    const bool countdown = BotScoreAccess::EvacState() == MP_EVAC_COUNTDOWN;
+    if (countdown && !z->inside.empty())
+        *pDest = EvacNodePos(z->inside[GetRandom(0, (int)z->inside.size() - 1)], dims);
+    else if (best)
+    {
+        *pDest = best->GetPosition();
+        pDest->x += GetRandom(-200.0f, 200.0f);
+        pDest->z += GetRandom(-200.0f, 200.0f);
+    }
+    // nobody heard: wait on the defenders' way in (half the time), the zone itself or the ways around it, as
+    // attacking players cut the defenders off and camp the evac point
+    else
+    {
+        const float r = GetRandom(0.0f, 1.0f);
+        if (!z->route.empty() && r < 0.5f)
+            *pDest = EvacNodePos(z->route[GetRandom(0, (int)z->route.size() - 1)], dims);
+        else if (!z->inside.empty() && (z->around.empty() || r < 0.75f))
+            *pDest = EvacNodePos(z->inside[GetRandom(0, (int)z->inside.size() - 1)], dims);
+        else if (!z->around.empty())
+            *pDest = EvacNodePos(z->around[GetRandom(0, (int)z->around.size() - 1)], dims);
+        else
+            return false;
+    }
+    if (g_cfg.debug)
+        Log("EVACDEST %s attacker -> %s (%.0f away)", b->name.c_str(), best ? ObjectLabel(best->m_hObject).c_str() : "zone",
+            (*pDest - p).Mag());
+    return true;
+}
+int EvacRace(int role)
+{
+    return BotScoreAccess::EvacRaceOf(role);
+}
+
+int EvacRole(const Bot& b)
+{
+    if (RaceSpecies(EvacRace(0)) == (int)b.species)
+        return 0;
+    if (RaceSpecies(EvacRace(1)) == (int)b.species)
+        return 1;
+    return -1;
+}
+} // namespace
+
+int BotMgr_EvacCount(int role)
+{
+    if (!g_navLoaded || !EvacMode() || !GameTypeAllowed())
+        return 0;
+    int n = 0;
+    for (size_t i = 0; i < g_bots.size(); ++i)
+        if (EvacRole(g_bots[i]) == role)
+            ++n;
+    return n;
+}
+
+int BotMgr_EvacAlive(int role)
+{
+    if (!g_navLoaded || !EvacMode() || !GameTypeAllowed())
+        return 0;
+    int n = 0;
+    for (size_t i = 0; i < g_bots.size(); ++i)
+        if (EvacRole(g_bots[i]) == role && g_bots[i].lives > 0)
+            ++n;
+    return n;
+}
+
+int BotMgr_EvacInZone()
+{
+    if (!g_navLoaded || !EvacMode())
+        return 0;
+    int n = 0;
+    for (size_t i = 0; i < g_bots.size(); ++i)
+    {
+        Bot& b = g_bots[i];
+        CAI* ai = b.alive && EvacRole(b) == 0 ? BotAI(b) : LTNULL;
+        if (ai && !ai->IsDead() && InEvacZone(ai->GetPosition()))
+            ++n;
+    }
+    return n;
+}
+
+void BotMgr_EvacStart()
+{
+    if (!EvacMode())
+        return;
+    BotScoreAccess::EvacCameraNoLives();
+    if (!g_navLoaded || !GameTypeAllowed())
+        return;
+    // as the game does the players at the start and at each new round: lives back, and everyone (re)spawns at the
+    // start points of his team
+    const LTFLOAT now = g_pLTServer->GetTime();
+    for (size_t i = 0; i < g_bots.size(); ++i)
+    {
+        Bot& b = g_bots[i];
+        const int role = EvacRole(b);
+        if (role < 0)
+            continue;
+        if (b.alive)
+        {
+            CAI* ai = BotAI(b);
+            if (ai)
+                g_pLTServer->RemoveObject(ai->m_hObject);
+            b.alive = false;
+        }
+        b.lives = BotScoreAccess::EvacLivesOf(role);
+        b.rowConFrags = 0;
+        b.respawnTime = now + 0.2f + 0.1f * (float)i;
+        // a bot keeps its scoreboard row across rounds (RowAdd does nothing then): send its new lives, or the row
+        // showed 0 until the bot's first death (a real-client test)
+        BotScoreAccess::RowUpdate(b);
+    }
+    Log("EVAC round start: %d defender bots (%d lives), %d attacker bots (%d lives); rounds won so far: defenders %d, "
+        "attackers %d", BotMgr_EvacCount(0), BotScoreAccess::EvacLivesOf(0), BotMgr_EvacCount(1),
+        BotScoreAccess::EvacLivesOf(1), BotScoreAccess::TeamScore(EvacRace(0)), BotScoreAccess::TeamScore(EvacRace(1)));
 }
 
 int BotMgr_ListedBots(int humans, int maxPlayers)
@@ -3675,12 +4270,33 @@ void FindPickups()
             g_pickups.push_back(pi);
         }
     }
-    int spearBoxes = 0, grenadeBoxes = 0;
+    // A box no waypoint leads to (behind a brush, on a one-waypoint island, 360 units past the graph's end) sent bots on
+    // runs that failed every path search or left them pushing at a wall (hot_nav: 75 of 110 PATHFAIL lines on six maps):
+    // a box whose nearest waypoint is more than 128 units away (horizontally) or not under it is never a goal.
+    int spearBoxes = 0, grenadeBoxes = 0, unreachable = 0;
     for (size_t i = 0; i < g_boxes.size(); ++i)
     {
+        HOBJECT hb = g_boxes[i].hBox.GetHOBJECT();
+        if (hb && g_navLoaded)
+        {
+            LTVector q;
+            g_pLTServer->GetObjectPos(hb, &q);
+            const int k = g_nav.Nearest(avp2bots::Vec3(q.x, q.y, q.z));
+            const avp2bots::Vec3* n = k >= 0 ? &g_nav.Node(k).pos : 0;
+            const float dx = n ? n->x - q.x : 1e6f, dz = n ? n->z - q.z : 1e6f, dy = n ? q.y - n->y : 1e6f;
+            if (!n || dx * dx + dz * dz > 128.0f * 128.0f || dy < -64.0f || dy > 160.0f)
+            {
+                g_boxes[i].bannedUntil = 1e30f;
+                ++unreachable;
+                if (g_cfg.debug)
+                    Log("AMMOBAN box at %.0f %.0f %.0f for the map: no waypoint by it", q.x, q.y, q.z);
+            }
+        }
         spearBoxes += g_boxes[i].spears > 0 && !g_boxes[i].human;
         grenadeBoxes += g_boxes[i].grenades > 0 && g_boxes[i].human;
     }
+    if (unreachable)
+        Log("AMMOBAN %d ammo boxes with no waypoint by them: never a goal", unreachable);
     Log("PICKUPS %d health/armor, %d ammo boxes (%d with spears, %d with pulse-rifle grenades)", (int)g_pickups.size(),
         (int)g_boxes.size(), spearBoxes, grenadeBoxes);
 }
@@ -4549,6 +5165,8 @@ bool BotMgr_SurvivorDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
     *pHoldUntil = 0.0f;
     if (!pAI || !pDest || !g_pGameServerShell->GetMultiplayerMgr())
         return false;
+    if (EvacMode())
+        return EvacDest(pAI, pDest, pHoldUntil);
     int survRace = -1;
     bool groupOn = false, trackOn = false;
     if (SurvivorMode() && g_pGameServerShell->GetMultiplayerMgr()->GetServerSubState() == MPMGR_SUBSTATE_SURVIVOR_CUT)
@@ -5026,12 +5644,15 @@ void BotMgr_PostStartWorld()
     Log("WORLD map=%s nav=%s %s", g_map.c_str(), g_navLoaded ? "loaded" : "missing", g_navLoaded ? "" : err.c_str());
     if (!g_navLoaded)
         return;
-    Log("NAV nodes=%d links=%d", g_nav.NodeCount(), g_nav.LinkCount());
+    Log("NAV nodes=%d links=%d low=%d", g_nav.NodeCount(), g_nav.LinkCount(), g_nav.LowNodes());
     LogPounceReach();
     g_nav.UseLadders(g_cfg.ladders);
+    if (g_cfg.preferDrops)
+        Log("NAV %d climb-down links replaced by the drops beside them", g_nav.PreferDrops());
     ScanObstacles();
     FindDoors();
     FindPickups();
+    FindEvacZones();
     BuildAmbushData();
 
     const LTFLOAT now = g_pLTServer->GetTime();
@@ -5114,8 +5735,14 @@ void BotMgr_Update()
                     const Bot* kb = killer ? FindBot(killer) : 0;
                     if (kb && kb->specialName && ai && kb->specialVictim == ai->m_hObject && now - kb->specialTime < 0.5f)
                         kw = kb->specialName;   // a head bite or tail strike (BotMgr's, not the AI weapon)
-                    Log("DEATH %s killer=%s lifetime=%.1f weapon=%s", b.name.c_str(), ObjectLabel(killer).c_str(),
-                        now - b.spawnTime, kw);
+                    // + the death type (DT_EXPLODE 7, DT_CRUSH 5 = falls...) and where: the weapon is the killer's
+                    // weapon in hand, not the cause (a Gunner killed by a fall showed up as "SADAR")
+                    LTVector at(0.0f, 0.0f, 0.0f);
+                    if (ai)
+                        at = ai->GetPosition();
+                    Log("DEATH %s killer=%s lifetime=%.1f weapon=%s type=%d at %.0f %.0f %.0f", b.name.c_str(),
+                        ObjectLabel(killer).c_str(), now - b.spawnTime, kw,
+                        ai ? (int)ai->GetDestructible()->GetDeathType() : -1, at.x, at.y, at.z);
                     if (g_cfg.debug && ai && killer && killer != ai->m_hObject)
                     {
                         // where the killer stood relative to the victim's facing (0 = in front, 180 = behind)
@@ -5201,7 +5828,7 @@ void BotMgr_Update()
                 for (int c = 0; c < kClassCount && !adult; ++c)
                     if (kClasses[c].species == BOT_ALIEN && grown && !_stricmp(kClasses[c].mpSet, grown))
                         adult = &kClasses[c];
-                b.lifeClass = adult ? adult : ClassFor(BOT_ALIEN, b.slot);
+                b.lifeClass = adult ? adult : ClassFor(BOT_ALIEN, b.classSlot);
                 b.stage = 0;
                 b.placeAt = true;
                 b.placePos = ai->GetPosition();
@@ -5271,7 +5898,7 @@ void BotMgr_Update()
                 b.survTeam = b.pendingRole;
                 const int sp = RaceSpecies(HuntRace(b.survTeam));
                 if (sp >= 0)
-                    b.species = (BotSpecies)sp;
+                    SetBotSpecies(b, (BotSpecies)sp);
                 b.forcedClass = 0;
                 b.pendingRole = -1;
                 b.switchAt = 0.0f;
@@ -5365,9 +5992,9 @@ void BotMgr_Update()
             }
             g_pLTServer->SetObjectState(ai->m_hObject, OBJSTATE_ACTIVE);
         }
-        else if (now >= b.respawnTime)
+        else if (now >= b.respawnTime && (!EvacMode() || EvacCanSpawn(b)))
         {
-            Spawn(b);
+            Spawn(b);   // (Evac: only while a round is on, with lives left)
         }
     }
 
@@ -5380,6 +6007,32 @@ void BotMgr_Update()
         TrafficTick(now);
     if (SurvivorMode())
         SurvivorTick(now);
+    if (EvacMode())
+    {
+        // (START_GAME gives every client lives after the hook 'evacstart' ran: take the camera's away here)
+        BotScoreAccess::EvacCameraNoLives();
+        // The bot rows' lives, sent again every 3 s: in a map's first round, half the rows still showed 0 lives with
+        // both the update sent with the ADD and a resend a second later (2nd real-client test); the clients must
+        // reset or drop some of them around the game's start. Lives matter in Evac; a few small messages.
+        static LTFLOAT nextLives = 0.0f;
+        if (now >= nextLives || now < nextLives - 10.0f)
+        {
+            nextLives = now + 3.0f;
+            for (size_t i = 0; i < g_bots.size(); ++i)
+                if (g_bots[i].rowId)
+                    BotScoreAccess::RowUpdate(g_bots[i]);
+        }
+        // the evacuation's countdown, cancel and completion (Update_Evac), with who is in the zone
+        static int lastState = 0;
+        const int st = BotScoreAccess::EvacState();
+        if (st != lastState)
+        {
+            Log("EVACSTATE %s: %d defender bots in the zone, defenders alive %d, attackers alive %d",
+                st == MP_EVAC_COUNTDOWN ? "countdown" : st == MP_EVAC_CANCEL ? "cancel" : st == MP_EVAC_COMPLETE ? "complete" : "none",
+                BotMgr_EvacInZone(), BotMgr_EvacAlive(0), BotMgr_EvacAlive(1));
+            lastState = st;
+        }
+    }
     if (now >= g_nextRows)
     {
         BotScoreAccess::CheckRows();
@@ -5705,6 +6358,29 @@ bool BotMgr_OnFire(HOBJECT hShooter)
     // animation's fire keys (which would hit at the AI's last target)
     if (bot && (bot->feeding || bot->tailSince > 0.0f || bot->biteAt > 0.0f))
         return false;
+    // A player's new weapon fires only once its select animation has played (and the old one's deselect): the AI
+    // changed weapons at once, so a Predator bot threw its disc and fired its plasma pistol in the same instant
+    // (players on prod: "pred can throw disk and shoot from pistol same time", "pistol to sniper in 0.0000001
+    // seconds"). The pulse rifle's grenades are its alternate fire, not another weapon.
+    if (bot && w)
+    {
+        const LTFLOAT now = g_pLTServer->GetTime();
+        const char* name = w->Name.c_str();
+        if (_stricmp(bot->handWeapon.c_str(), name))
+        {
+            const bool altFire = (IsWeapon(w, kPRGrenade) && !_stricmp(bot->handWeapon.c_str(), "Pulse_Rifle_MP")) ||
+                                 (IsWeapon(w, "Pulse_Rifle_MP") && !_stricmp(bot->handWeapon.c_str(), kPRGrenade));
+            if (!bot->handWeapon.empty() && !altFire && g_cfg.switchTime > 0.0f)
+            {
+                bot->weaponReadyAt = now + g_cfg.switchTime;
+                if (g_cfg.debug)
+                    Log("SWITCH %s %s -> %s", bot->name.c_str(), bot->handWeapon.c_str(), name);
+            }
+            bot->handWeapon = name;
+        }
+        if (now < bot->weaponReadyAt)
+            return false;
+    }
     // with trackers, a person holds the SADAR while its lock forms on an enemy (2 s), then fires a tracker
     if (bot && w && g_cfg.altFire && bot->species == BOT_MARINE && bot->trackers > 0 && ai && IsWeapon(w, "SADAR_MP")
         && !bot->sadarLocked && SadarLockOnEnemy(*bot, ai)
@@ -5777,6 +6453,18 @@ static void SpendShot(HOBJECT hShooter, CAI* ai, const AIWBM_AIWeapon* w, Bot* b
 
 void BotMgr_OnDamage(HOBJECT hVictim, HOBJECT hDamager, LTFLOAT fDamage, int nType)
 {
+    // always: a bot hurting itself (its own explosion, a fall), with where it stood, to find the causes in prod logs
+    if (fDamage > 0.0f && hVictim && hVictim == hDamager && nType != DT_NAPALM && !g_bots.empty())
+    {
+        Bot* sb = FindBot(hVictim);
+        CAI* sai = sb ? BotAI(*sb) : LTNULL;
+        if (sai)
+        {
+            const LTVector& sp = sai->GetPosition();
+            Log("SELFDMG %s %.1f type=%d weapon=%s hp=%.0f at %.0f %.0f %.0f", sb->name.c_str(), fDamage, nType,
+                KillWeaponLabel(hDamager, nType), sai->GetHitPoints(), sp.x, sp.y, sp.z);
+        }
+    }
     // debug only: every hit a bot deals, with its weapon at that moment, and damage a bot takes from
     // anything else (falls, hazards, a damager that no longer exists)
     if (!g_cfg.debug || fDamage <= 0.0f || g_bots.empty())
@@ -5804,6 +6492,60 @@ void BotMgr_OnDamage(HOBJECT hVictim, HOBJECT hDamager, LTFLOAT fDamage, int nTy
     }
     const char* wn = (g_strikeName && hDamager == g_strikeShooter) ? g_strikeName : KillWeaponLabel(hDamager, nType);
     Log("DMG %s -> %s %.1f weapon=%s", ObjectLabel(hDamager).c_str(), ObjectLabel(hVictim).c_str(), fDamage, wn);
+}
+
+// What a splash shot's straight line meets first: world geometry, world models (doors, crates) and live characters
+// other than the shooter (a rocket hits the ally or the enemy standing in front of the muzzle).
+LTBOOL SplashFilter(HOBJECT hObj, void* pUser)
+{
+    if (hObj == (HOBJECT)pUser)
+        return LTFALSE;
+    if (g_pLTServer->GetObjectType(hObj) == OT_WORLDMODEL)
+        return LTTRUE;
+    CCharacter* c = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hObj));
+    return c && !c->IsDead();
+}
+
+bool BotMgr_SplashSafe(HOBJECT hShooter, const LTVector& vFirePos, const LTVector& vPath)
+{
+    // Prod, 2026-11-13..16: 644 bot deaths by their own explosion (Gunner bots' SADAR 250 on one server in 69 h,
+    // Predator bots' plasma pistol 177 in Hunt in 66 h, shoulder cannon 46). The fire range keeps the target out of
+    // the blast (MPWEAPON "no shot inside its own blast"), but the shot itself can meet a wall, a door frame or a
+    // character next to the bot, most of all with a wide aim error. A person does not fire a rocket into the wall in
+    // front of him: when the straight line from the muzzle meets something closer to the bot than the ammo's blast
+    // radius (+ 32), no shot.
+    CAI* ai = dynamic_cast<CAI*>(g_pLTServer->HandleToObject(hShooter));
+    CWeapon* w = ai ? ai->GetCurrentWeaponPtr() : LTNULL;
+    const AMMO* ammo = w ? w->GetAmmoData() : LTNULL;
+    if (!g_cfg.splashSafe || !ammo || ammo->eType != PROJECTILE || ammo->nAreaDamage <= 0 || ammo->nAreaDamageRadius <= 0)
+        return true;
+    const float r = (float)ammo->nAreaDamageRadius + 32.0f;
+    LTVector dir = vPath;
+    if (dir.MagSqr() < 0.0001f)
+        return true;
+    dir.Norm();
+    IntersectQuery q;
+    IntersectInfo info;
+    q.m_From = vFirePos;
+    q.m_To = vFirePos + dir * (r + 64.0f);
+    q.m_Flags = INTERSECT_OBJECTS | IGNORE_NONSOLID;
+    q.m_FilterFn = SplashFilter;
+    q.m_pUserData = hShooter;
+    if (!g_pLTServer->IntersectSegment(&q, &info))
+        return true;
+    const float d = (info.m_Point - ai->GetPosition()).Mag();
+    if (d >= r)
+        return true;
+    Bot* b = FindBot(hShooter);
+    const LTFLOAT now = g_pLTServer->GetTime();
+    ++g_splashHeld;
+    if (b && now >= b->splashLogAt)
+    {
+        Log("SPLASHHOLD %s %s impact %.0f from the bot (blast %d) on %s", b->name.c_str(), ammo->szName, d,
+            ammo->nAreaDamageRadius, info.m_hObject ? ObjectLabel(info.m_hObject).c_str() : "world");
+        b->splashLogAt = now + 2.0f;
+    }
+    return false;
 }
 
 bool BotMgr_AimError(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vFirePos, LTVector& vPath, bool bFullyAimed)
@@ -7859,6 +8601,13 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
 
     const LTVector& p = pAI->GetPosition();
     const LTVector& dims = pAI->GetDims();
+    // a bot taller than the graph's agent (120: a Predalien is 140) avoids low waypoints and doorways (hn/he lines):
+    // it stopped 24 units before every 128-high lintel (hot_nav: 26 % of the stuck reports on 8 maps)
+    struct AgentHeightScope
+    {
+        explicit AgentHeightScope(float h) { g_nav.SetAgentHeight(h); }
+        ~AgentHeightScope() { g_nav.SetAgentHeight(0.0f); }
+    } agentHeight(g_cfg.headroom && 2.0f * dims.y > 124.0f ? 2.0f * dims.y : 0.0f);
     int a = g_nav.Nearest(Vec3(p.x, p.y - dims.y, p.z));
     int b = g_nav.Nearest(Vec3(vDest.x, vDest.y - dims.y, vDest.z));
     // a wall ambush (BotMgr_AmbushPick): the path goes to the floor in front of the wall, then onto the wall point
@@ -7937,6 +8686,22 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
         else
             ++f.quiet;
         g_pathFails[pAI->m_hObject] = f;
+        // a box run with no way to the box: that box is out for the rest of the map (it was banned only after the bot
+        // got stuck on its way; the search failed again 4 times a second meanwhile)
+        if (Bot* fb = FindBot(pAI->m_hObject))
+            if (HOBJECT hb = fb->goalBox.GetHOBJECT())
+            {
+                LTVector q;
+                g_pLTServer->GetObjectPos(hb, &q);
+                if ((q - vDest).MagSqr() < 160.0f * 160.0f)
+                    for (size_t i = 0; i < g_boxes.size(); ++i)
+                        if (g_boxes[i].hBox.GetHOBJECT() == hb)
+                        {
+                            g_boxes[i].bannedUntil = 1e30f;
+                            fb->goalBox = (HOBJECT)LTNULL;
+                            Log("AMMOBAN box at %.0f %.0f %.0f for the map (no path from waypoint %d)", q.x, q.y, q.z, a);
+                        }
+            }
         return LTFALSE;
     }
 
@@ -8380,7 +9145,7 @@ bool BotMgr_Command(const char* text, char* reply, int replySize)
                     g_cfg.fill > 0 ? " (fill)" : "");
     for (size_t i = 0; i < g_bots.size() && len > 0 && len < replySize - 40; ++i)
     {
-        const BotClass* c = g_bots[i].forcedClass ? g_bots[i].forcedClass : ClassFor(g_bots[i].species, g_bots[i].slot);
+        const BotClass* c = g_bots[i].forcedClass ? g_bots[i].forcedClass : ClassFor(g_bots[i].species, g_bots[i].classSlot);
         len += Reply(reply + len, replySize - len, " %s%d(%s%s)", kSpecies[g_bots[i].species].tag, g_bots[i].slot,
                      c ? c->name : "-", g_bots[i].alive ? "" : ",dead");
     }

@@ -115,6 +115,9 @@ void BotMgr_NoteShot(HOBJECT hShooter);
 // Returns false when the gun still points more than 6 degrees away from the target: no shot (a person does
 // not fire a rail gun while still turning toward the target).
 bool BotMgr_AimError(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vFirePos, LTVector& vPath, bool bFullyAimed);
+// A bot's splash shot (rocket, plasma bolt, grenade): false when its straight line meets a wall, a world model or a
+// character closer to the bot than the ammo's blast radius (+ 32): no shot (hook 'botsplash'; log SPLASHHOLD).
+bool BotMgr_SplashSafe(HOBJECT hShooter, const LTVector& vFirePos, const LTVector& vPath);
 LTFLOAT BotMgr_DamageScale();  // bots.cfg 'damage': bots' weapon damage relative to players' (default 1)
 // A player's client claims a vector-weapon hit on hTarget, which it saw at vTargetPos (MID_WEAPON_HIT): true when
 // hTarget is a live bot near that position, so the hit is applied as on a player (hook botweaponhit).
@@ -240,6 +243,13 @@ bool BotMgr_ChestbursterGrown(HOBJECT hObj, int nNewSet);
 // A chestburster bot keeps away from the fight while it grows (BotRoamGoal; bots.cfg 'cbhide').
 bool BotMgr_HideDest(CAI* pAI, LTVector* pDest);
 void BotMgr_SurvivorNewRound(bool lastRound);
+// Evac (MultiplayerMgr::Update_Evac, MID_MPMGR_START_GAME; hooks 'evaccount', 'evacstartcount', 'evacstart',
+// 'evacround', 'evacalive', 'evaczone'): bots per team (0 defenders, 1 attackers), bots with lives left this round,
+// live defender bots inside the evac zone, and the start of the game or of a new round (lives back, everyone respawns).
+int BotMgr_EvacCount(int role);
+int BotMgr_EvacAlive(int role);
+int BotMgr_EvacInZone();
+void BotMgr_EvacStart();
 
 // Server list ('listbots' option): how many bots the GameSpy replies count as players (at most
 // maxPlayers - 1 - humans, so the server never looks full to a person), and their names and races.

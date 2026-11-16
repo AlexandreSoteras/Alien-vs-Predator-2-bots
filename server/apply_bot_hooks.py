@@ -558,6 +558,52 @@ def main():
          + "\t\treturn LTTRUE;\n\n"),
     ])
 
+    # Evac (Update_Evac, MID_MPMGR_START_GAME): bots are defenders and attackers with lives, and a defender bot in the
+    # evac zone counts like a player there
+    print("MultiplayerMgr.cpp (evac)")
+    patch("ObjectDLL/MultiplayerMgr.cpp", [
+        ("evaccount",
+         r"^(void MultiplayerMgr::Update_Evac\(\)\n\{\n\t// Count the number of defenders and attackers in the level\n"
+         r"\tint nDefenders = NumberOfClass\(m_GameInfo\.m_nTM_DefenderRace, LTTRUE\);\n"
+         r"\tint nAttackers = NumberOfClass\(m_GameInfo\.m_nTM_AttackerRace, LTTRUE\);\n)",
+         lambda m: m.group(1) + "\t// @TAG: bots are defenders and attackers too\n"
+                   "\tnDefenders += BotMgr_EvacCount(0);\n\tnAttackers += BotMgr_EvacCount(1);\n"),
+        ("evacstartcount",
+         r"^(\t\t\t\t\t// Make sure the number of defenders and attackers is ok\.\.\.\n"
+         r"\t\t\t\t\tint nDefenders = NumberOfClass\(m_GameInfo\.m_nTM_DefenderRace, LTTRUE\);\n"
+         r"\t\t\t\t\tint nAttackers = NumberOfClass\(m_GameInfo\.m_nTM_AttackerRace, LTTRUE\);\n)",
+         lambda m: m.group(1) + "\t\t\t\t\t// @TAG: bots are defenders and attackers too (Evac; 0 in Overrun)\n"
+                   "\t\t\t\t\tnDefenders += BotMgr_EvacCount(0);\n\t\t\t\t\tnAttackers += BotMgr_EvacCount(1);\n"),
+        ("evacstart",
+         r"^(\t\t\t\t\t\t// Set the new state\n\t\t\t\t\t\tm_nServerSubState = MPMGR_SUBSTATE_TM_GOING;\n"
+         r"\t\t\t\t\t\tm_fStartTime = g_pLTServer->GetTime\(\);\n)",
+         lambda m: m.group(1) + "\t\t\t\t\t\tBotMgr_EvacStart(); // @TAG: the bots' lives, and they spawn\n"),
+        ("evacround",
+         r"^(\t\t\t\t// Put us back in normal mode\n\t\t\t\tm_nServerSubState = MPMGR_SUBSTATE_TM_GOING;\n"
+         r"\t\t\t\tm_nEvacState = 0;\n)",
+         lambda m: m.group(1) + "\t\t\t\tBotMgr_EvacStart(); // @TAG: the bots' lives back, and they respawn for the new round\n"),
+        # the game starts only from the loop over the connected clients: with nobody in, bots never played
+        ("evacbotstart",
+         r"(?s)(void MultiplayerMgr::Update_Evac\(\).*?)(\n\t\}\n\t// Handle waiting on the next round\.\.\.\n)",
+         lambda m: m.group(1)
+         + "\n\n\t\t// @TAG: no player in: the bots start the game themselves after the same delay\n"
+           "\t\tif(!m_nClients && bCanStart)\n\t\t{\n\t\t\tif(!m_fMiscTime)\n\t\t\t\tm_fMiscTime = g_pLTServer->GetTime();\n"
+           "\t\t\tif(g_pLTServer->GetTime() - m_fMiscTime >= MPMGR_ROUND_START_DELAY)\n"
+           "\t\t\t\tOnMessage(LTNULL, MID_MPMGR_START_GAME, LTNULL);\n\t\t}"
+         + m.group(2)),
+        # "the game is over if an entire team quits": a team of bots has not quit
+        ("evacend",
+         r"(?s)(LTBOOL MultiplayerMgr::CheckEndConditions_Evac\(\)\n\{\n.*?"
+         r"\tint nAttackers = NumberOfClass\(m_GameInfo\.m_nTM_AttackerRace, LTTRUE\);\n)",
+         lambda m: m.group(1) + "\t// @TAG: bots are defenders and attackers too\n"
+                   "\tnDefenders += BotMgr_EvacCount(0);\n\tnAttackers += BotMgr_EvacCount(1);\n"),
+        ("evacalive",
+         r"^(\t\t// Check the number of people in the Evac zone here\.\.\.\n\t\tint nEvacAmount = 0;\n)",
+         lambda m: "\t\t// @TAG: bots with lives left count as alive, and a defender bot in the zone as a player there\n"
+                   "\t\tnDefendersAlive += BotMgr_EvacAlive(0);\n\t\tnAttackersAlive += BotMgr_EvacAlive(1);\n\n"
+                   + m.group(1) + "\t\tnEvacAmount += BotMgr_EvacInZone(); // avp2bots:evaczone\n"),
+    ])
+
     print("MultiplayerMgr.cpp (survivor)")
     patch("ObjectDLL/MultiplayerMgr.cpp", [
         ("survcount",
@@ -719,6 +765,13 @@ def main():
          lambda m: "\t// @TAG: a Predator bot's disc comes back: keep its ideal weapon instead of dropping it for good\n"
                    "\tif( m_pIdealWeaponButes && !BotMgr_PredAmmoBot(m_hObject)\n"
                    "\t\t&& !HasAmmo(*m_pIdealWeaponButes, *m_pWeaponPosition, m_hObject, GetInjuredMovement() ) )\n"),
+        # prod 2026-11-13..16: 644 bots killed by their own explosion (SADAR, plasma pistol, shoulder cannon)
+        ("botsplash",
+         r"^(\t\tfireInfo\.hTestObj = BotMgr_FireCommit\(m_hObject, fireInfo\.hTestObj, fireInfo\.vFirePos, fireInfo\.vPath\);\n)",
+         lambda m: m.group(1)
+         + "\t// @TAG: no rocket or plasma bolt into a wall or a character next to the bot (its own blast)\n"
+         + "\tif(bBot && !BotMgr_SplashSafe(m_hObject, fireInfo.vFirePos, fireInfo.vPath))\n"
+         + "\t\treturn false;\n"),
     ])
     print("PredDisk.cpp")
     patch("ObjectDLL/PredDisk.cpp", [

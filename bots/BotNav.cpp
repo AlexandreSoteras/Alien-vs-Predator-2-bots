@@ -21,7 +21,7 @@ float DistXZ(const Vec3& a, const Vec3& b)
     return std::sqrt(dx * dx + dz * dz);
 }
 
-BotNav::BotNav() : m_useLadders(false), m_lastExpanded(0) {}
+BotNav::BotNav() : m_useLadders(false), m_lastExpanded(0), m_agentHeight(0.0f) {}
 
 bool PathBias::InCone(const Vec3& p) const
 {
@@ -38,6 +38,7 @@ void BotNav::Clear()
     m_nodes.clear();
     m_blocked.clear();
     m_badSpawns.clear();
+    m_nodeHead.clear();
     m_useDoors.clear();
     m_component.clear();
     m_componentLadders.clear();
@@ -59,6 +60,7 @@ static void AddLink(NavNode& from, int to, const Vec3& portal, NavLinkKind kind,
     l.portal = portal;
     l.kind = kind;
     l.blocked = false;
+    l.head = 1e9f;
     l.hasEnds = false;
     // cost = path length through the portal; drops are cheap to take but slightly penalised
     // so bots prefer walking routes of similar length
@@ -176,6 +178,33 @@ bool BotNav::Load(const char* path, std::string* error)
             if (std::sscanf(line + 8, "%127s", name) == 1)
                 m_useDoors.push_back(name);
         }
+        else if (std::strncmp(line, "hn ", 3) == 0)
+        {
+            int id;
+            float h;
+            if (std::sscanf(line + 3, "%d %f", &id, &h) == 2 && id >= 0 && id < (int)m_nodes.size())
+            {
+                if (m_nodeHead.size() != m_nodes.size())
+                    m_nodeHead.assign(m_nodes.size(), 1e9f);
+                m_nodeHead[id] = h;
+            }
+        }
+        else if (std::strncmp(line, "he ", 3) == 0)
+        {
+            // the link a -> b, and b -> a when it is a two-way walk
+            int a, b;
+            float h;
+            if (std::sscanf(line + 3, "%d %d %f", &a, &b, &h) == 3 && a >= 0 && b >= 0 && a < (int)m_nodes.size() &&
+                b < (int)m_nodes.size())
+            {
+                for (size_t i = 0; i < m_nodes[a].links.size(); ++i)
+                    if (m_nodes[a].links[i].to == b)
+                        m_nodes[a].links[i].head = h < m_nodes[a].links[i].head ? h : m_nodes[a].links[i].head;
+                for (size_t i = 0; i < m_nodes[b].links.size(); ++i)
+                    if (m_nodes[b].links[i].to == a && m_nodes[b].links[i].kind == NAV_WALK)
+                        m_nodes[b].links[i].head = h < m_nodes[b].links[i].head ? h : m_nodes[b].links[i].head;
+            }
+        }
         else if (std::strncmp(line, "badspawn ", 9) == 0)
         {
             float x, y, z;
@@ -234,6 +263,32 @@ bool BotNav::IsBadSpawn(const Vec3& pos, bool alien) const
 void BotNav::UseLadders(bool use)
 {
     m_useLadders = use;
+}
+
+int BotNav::PreferDrops()
+{
+    int removed = 0;
+    for (size_t k = 0; k < m_nodes.size(); ++k)
+    {
+        std::vector<NavLink>& ls = m_nodes[k].links;
+        for (size_t i = 0; i < ls.size();)
+        {
+            bool drop = false;
+            if (ls[i].kind == NAV_CLIMBDOWN)
+                for (size_t j = 0; j < ls.size() && !drop; ++j)
+                    drop = j != i && ls[j].to == ls[i].to && (ls[j].kind == NAV_DROP || ls[j].kind == NAV_JUMP);
+            if (drop)
+            {
+                ls.erase(ls.begin() + i);
+                ++removed;
+            }
+            else
+                ++i;
+        }
+    }
+    if (removed)
+        BuildComponents();
+    return removed;
 }
 
 void BotNav::BuildComponents()
@@ -358,7 +413,8 @@ bool BotNav::FindPath(int a, int b, std::vector<Vec3>* points, std::vector<int>*
         {
             int t = ls[i].to;
             if (closed[t] || ls[i].blocked || (t != b && IsBlocked(t)) || (ls[i].kind == NAV_LADDER && !ladders) ||
-                ((ls[i].kind == NAV_CLIMB || ls[i].kind == NAV_CLIMBDOWN) && !allowClimb))
+                ((ls[i].kind == NAV_CLIMB || ls[i].kind == NAV_CLIMBDOWN) && !allowClimb) ||
+                (m_agentHeight > 0.0f && (ls[i].head < m_agentHeight || NodeHead(t) < m_agentHeight)))
                 continue;
             float c = ls[i].cost;
             if (bias)
@@ -419,7 +475,8 @@ int BotNav::ReachableCount(int from, int limit, int allowLadders, bool allowClim
         {
             const int t = ls[i].to;
             if (seen[t] || ls[i].blocked || IsBlocked(t) || (ls[i].kind == NAV_LADDER && !ladders) ||
-                ((ls[i].kind == NAV_CLIMB || ls[i].kind == NAV_CLIMBDOWN) && !allowClimb))
+                ((ls[i].kind == NAV_CLIMB || ls[i].kind == NAV_CLIMBDOWN) && !allowClimb) ||
+                (m_agentHeight > 0.0f && (ls[i].head < m_agentHeight || NodeHead(t) < m_agentHeight)))
                 continue;
             seen[t] = 1;
             queue.push_back(t);

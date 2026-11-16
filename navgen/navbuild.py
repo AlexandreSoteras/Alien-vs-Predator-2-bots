@@ -460,7 +460,44 @@ def strongly_connected(vertices, graph):
     return comp
 
 
-def write_nav(path, mapname, P, nodes, edges, badspawns=(), use_doors=()):
+HEADROOM_NOTE = 152.0  # write the headroom where it is under this (the tallest bot, a Predalien, is 140)
+
+
+def headroom(nodes, edges, spans_all, bounds, P):
+    """Clear height above the floor at each waypoint and at each walk/drop/jump link's portal, where it is under
+    HEADROOM_NOTE: the lowest ceiling of the floor spans within one cell of the point, at its floor level (+-48)."""
+    ox, oz, _, _ = bounds
+    cs = P["cs"]
+    by_col = collections.defaultdict(list)
+    for (ix, iz, _), (fy, cy) in spans_all.items():
+        by_col[(ix, iz)].append((fy, cy))
+
+    def clear_at(x, y, z):
+        ix, iz = int((x - ox) / cs), int((z - oz) / cs)
+        best = None
+        for jx in (ix - 1, ix, ix + 1):
+            for jz in (iz - 1, iz, iz + 1):
+                for fy, cy in by_col.get((jx, jz), ()):
+                    if abs(fy - y) <= 48.0:
+                        h = cy - fy
+                        best = h if best is None or h < best else best
+        return best
+
+    node_h, edge_h = {}, {}
+    for i, (x, y, z) in enumerate(nodes):
+        h = clear_at(x, y, z)
+        if h is not None and h < HEADROOM_NOTE:
+            node_h[i] = h
+    for a, b, p, kind in edges:
+        if kind not in ("walk", "drop", "jump"):
+            continue
+        h = clear_at(p[0], p[1], p[2])
+        if h is not None and h < HEADROOM_NOTE:
+            edge_h[(a, b)] = min(h, edge_h.get((a, b), h))
+    return node_h, edge_h
+
+
+def write_nav(path, mapname, P, nodes, edges, badspawns=(), use_doors=(), heads=None):
     with open(path, "w", encoding="ascii", newline="\n") as f:
         f.write("AVP2NAV 1\n")
         f.write(f"map {mapname}\n")
@@ -486,6 +523,14 @@ def write_nav(path, mapname, P, nodes, edges, badspawns=(), use_doors=()):
         # start points bots should not spawn at: 'walkers' (Marines, Predators), 'aliens' or 'all'
         for x, y, z, who in badspawns:
             f.write(f"badspawn {x:.1f} {y:.1f} {z:.1f} {who}\n")
+        # headroom under HEADROOM_NOTE, where the graph's agent fits but a taller bot may not (the Predalien is 140
+        # tall): 'hn <waypoint> <headroom>', 'he <a> <b> <headroom>' (at the link's portal, the link a -> b)
+        if heads:
+            node_h, edge_h = heads
+            for i, h in sorted(node_h.items()):
+                f.write(f"hn {i} {h:.0f}\n")
+            for (a, b), h in sorted(edge_h.items()):
+                f.write(f"he {a} {b} {h:.0f}\n")
 
 
 def render(path, P, bounds, spans_all, spans, comp, main_comp, nodes, edges, starts, start_hits, tris=None):
@@ -520,7 +565,7 @@ def render(path, P, bounds, spans_all, spans, comp, main_comp, nodes, edges, sta
         bx, bz = px(nodes[b][0], nodes[b][2])
         mx, mz = px(pxw, pzw)
         col = {"walk": (240, 200, 60), "drop": (255, 120, 220), "ladder": (60, 230, 255), "jump": (255, 60, 60),
-               "climb": (120, 255, 120), "climbdown": (120, 255, 120)}.get(kind, (255, 255, 255))
+               "climb": (120, 255, 120), "climbdown": (120, 255, 120), "teleport": (255, 0, 255)}.get(kind, (255, 255, 255))
         d.line([ax, az, mx, mz, bx, bz], fill=col, width=3 if kind == "ladder" else 1)
     for x, _, z in nodes:
         cx, cz = px(x, z)
@@ -554,6 +599,7 @@ class MapInfo:
     def __init__(self, path, cls_regex, start_prop):
         self.starts, self.ladders, self.hazards, self.auto_exclude, self.water = [], [], [], [], []
         self.use_doors = []
+        self.teleports = []
         if not path or not os.path.exists(path):
             return
         data = json.load(open(path, encoding="utf-8"))
@@ -565,6 +611,21 @@ class MapInfo:
                 pos = o.get("pos") or prop(o, "Pos")
                 if pos and len(pos) >= 3:
                     self.starts.append(tuple(float(c) for c in pos[:3]))
+        # touch teleporters: a Trigger players set off by walking into it, whose touch message is
+        # "Teleport <TeleportPoint>" (sent to whoever touched it; suk-stronghold_2's alien spawn room has no other way out)
+        self.teleports = []
+        points = {(o.get("name") or "").lower(): o.get("pos") or prop(o, "Pos")
+                  for o in objs if o.get("class") == "TeleportPoint"}
+        for o in objs:
+            if o.get("class") != "Trigger" or not prop(o, "TriggerTouch") or not prop(o, "PlayerTriggerable"):
+                continue
+            for msg in str(prop(o, "MessageTouch", "") or "").split(";"):
+                words = msg.split()
+                if len(words) == 2 and words[0].lower() == "teleport" and points.get(words[1].lower()):
+                    src = o.get("pos") or prop(o, "Pos")
+                    dst = points[words[1].lower()]
+                    self.teleports.append((o.get("name") or "", tuple(float(c) for c in src[:3]),
+                                           tuple(float(c) for c in dst[:3])))
         if not isinstance(data, dict):
             return
         wms = data.get("world_models", [])
@@ -574,6 +635,13 @@ class MapInfo:
             if "door" in (o.get("class") or "").lower() and o.get("name"):
                 door_props[o["name"].lower()] = {p["name"]: p.get("value") for p in o.get("properties", [])}
         self.use_doors = []
+        # volumes a door carries along (its Attachments): they are not where the map file puts them for long
+        # (evac_moria's Balrog fire, a PoisonGas volume riding a 5216-unit mover): not a fixed no-go zone
+        moving = set()
+        for p in door_props.values():
+            for a in str(p.get("Attachments") or "").split(";"):
+                if a.strip():
+                    moving.add(a.strip().lower())
         span_x = max((w["bbox_max"][0] - w["bbox_min"][0]) for w in world) if world else 1e9
         span_z = max((w["bbox_max"][2] - w["bbox_min"][2]) for w in world) if world else 1e9
         self.water = []
@@ -585,7 +653,9 @@ class MapInfo:
                 self.ladders.append((name, bmin, bmax))
             elif kind == "volume":
                 # volumes never block (their OBJ groups are excluded); the harmful ones are no-go zones
-                if cls in ("Electricity", "PoisonGas") or re.search(r"damage|death|kill|lava|acid", name, re.I):
+                if name.lower() in moving:
+                    print(f"hazard volume {name} rides a door: not a fixed no-go zone")
+                elif cls in ("Electricity", "PoisonGas") or re.search(r"damage|death|kill|lava|acid", name, re.I):
                     self.hazards.append((name, bmin, bmax))
             elif kind == "liquid":
                 # liquids are volumes you move through, not walls or floors
@@ -596,6 +666,10 @@ class MapInfo:
                     self.water.append((name, bmin, bmax))
             elif kind == "brush" and w.get("blocks") is False:
                 # brushes whose Solid property is off (decoration, effects): nothing collides with them
+                self.auto_exclude.append("brush_" + name)
+            elif kind == "brush" and cls == "EvacZone":
+                # the Evac zone is a container volume players stand in (CC_EVACZONE), not a block: the graph had its
+                # waypoints on top of it
                 self.auto_exclude.append("brush_" + name)
             elif kind == "brush" and (name.lower() == "skybox" or
                                       (bmax[0] - bmin[0] > 0.8 * span_x and bmax[2] - bmin[2] > 0.8 * span_z)):
@@ -768,6 +842,8 @@ def main():
     ap.add_argument("--exclude-materials", default=r"^(sky|nonsolid)$", help="regex of OBJ materials that never block")
     ap.add_argument("--start-class", default=r"start", help="regex of start point class names")
     ap.add_argument("--start-prop", default="MP_DM", help="bool property a start point must have set (empty = any)")
+    ap.add_argument("--teleports", action="store_true",
+                    help="experimental: teleporter links and the largest-area main-area rule (the bots do not support them yet)")
     for k, v in DEFAULTS.items():
         ap.add_argument("--" + k.replace("_", "-"), type=type(v), default=v)
     a = ap.parse_args()
@@ -813,6 +889,16 @@ def main():
     for line in lreport:
         print("ladder", line)
     edges += climb_links(climbs, spans_all, adj_all, keys, spans, owner, nodes, bounds, P)
+    # teleporters: one way, from the waypoint under the trigger to the one under its TeleportPoint; the portal is the
+    # trigger's position on the floor (a bot walks there and the trigger sends it, as it does a player)
+    for name, src, dst in (info.teleports if a.teleports else ()):
+        ks, kd = find_span(spans, bounds, P, src), find_span(spans, bounds, P, dst)
+        na, nb = owner.get(ks) if ks is not None else None, owner.get(kd) if kd is not None else None
+        if na is None or nb is None or na == nb:
+            print(f"teleport {name}: no waypoint under the {'trigger' if na is None else 'destination'}, skipped")
+            continue
+        edges.append((na, nb, (src[0], spans[ks][0], src[2]), "teleport"))
+        print(f"teleport {name}: waypoint {na} -> {nb} ({dst[0]:.0f} {dst[1]:.0f} {dst[2]:.0f})")
     kinds = collections.Counter(e[3] for e in edges)
     print(f"waypoints {len(nodes)}, edges {len(edges)} {dict(kinds)}")
 
@@ -823,12 +909,12 @@ def main():
     graph_any = collections.defaultdict(set)
     for ea, eb, _, kind in edges:
         graph_any[ea].add(eb)
-        if kind not in ("drop", "jump", "climb", "climbdown"):
+        if kind not in ("drop", "jump", "climb", "climbdown", "teleport"):
             graph_any[eb].add(ea)
         if kind in ("climb", "climbdown"):
             continue
         graph[ea].add(eb)
-        if kind not in ("drop", "jump"):
+        if kind not in ("drop", "jump", "teleport"):
             graph[eb].add(ea)
 
     starts = info.starts
@@ -855,13 +941,16 @@ def main():
         print(f"spawn-to-spawn pairs without a route: {bad_pairs} of {len(set(valid)) ** 2}")
         hits = [n is not None for n in start_nodes]
 
-        # The main play area = the strongly connected part of the graph holding the most spawns (every point
+        # The main play area = the largest strongly connected part of the graph holding a spawn (every point
         # in it reaches every other). A spawn outside it that can still reach it is a spawn platform you drop
-        # from (normal in DM); a spawn that cannot reach it strands its bots in a separate part of the map.
+        # from (normal in DM) or a room left by a teleporter; a spawn that cannot reach it strands its bots in a
+        # separate part of the map. (Largest, not the one with the most spawns: suk-stronghold_2's 10 alien spawns
+        # share a small room whose only exits are teleporters.)
         def main_area(g):
             scc = strongly_connected(range(len(nodes)), g)
             per = collections.Counter(scc[n] for n in valid)
-            main_scc = per.most_common(1)[0][0] if per else None
+            size = collections.Counter(scc[n] for n in range(len(nodes)))
+            main_scc = (max(per, key=lambda c: (size[c], per[c])) if a.teleports else per.most_common(1)[0][0]) if per else None
             main = {n for n in range(len(nodes)) if scc[n] == main_scc}
             rev = collections.defaultdict(set)
             for k, vs in g.items():
@@ -926,7 +1015,8 @@ def main():
 
     nav_path = os.path.join(out, mapname + ".nav")
     png_path = os.path.join(out, mapname + "_nav.png")
-    write_nav(nav_path, mapname, P, nodes, edges, badspawns, info.use_doors)
+    write_nav(nav_path, mapname, P, nodes, edges, badspawns, info.use_doors,
+              headroom(nodes, edges, spans_all, bounds, P))
     render(png_path, P, bounds, spans_all, spans, comp, main_comp, nodes, edges, starts, hits, tris)
     print("wrote", nav_path, "and", png_path)
 
