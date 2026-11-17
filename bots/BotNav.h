@@ -131,6 +131,10 @@ public:
     // A bot taller than the graph's agent (120: the Predalien is 140) skips waypoints and links with less clear
     // height ('hn' / 'he' lines of the .nav) in FindPath and ReachableCount; 0 = no filter. Set it around a search.
     void SetAgentHeight(float h) { m_agentHeight = h; }
+    // ... except on walk and drop links, which the bot crawls through (a crouching alien walks off the edge); climbs
+    // and jumps keep the full height (a crawling Predalien stuck in evac_colony's ladder shaft, a wall climb under a
+    // 128 ceiling)
+    void SetCrawlWalk(bool c) { m_crawlWalk = c; }
     float NodeHead(int node) const { return node >= 0 && node < (int)m_nodeHead.size() ? m_nodeHead[node] : 1e9f; }
     int LowNodes() const { int n = 0; for (size_t i = 0; i < m_nodeHead.size(); ++i) n += m_nodeHead[i] < 1e8f; return n; }
 
@@ -140,6 +144,12 @@ private:
     std::vector<char> m_blocked;
     std::vector<float> m_nodeHead;   // clear height per waypoint ('hn' lines; 1e9 elsewhere)
     float m_agentHeight;             // SetAgentHeight
+    bool m_crawlWalk;                // SetCrawlWalk
+    bool TooLow(const NavLink& l, int to) const
+    {
+        return m_agentHeight > 0.0f && !(m_crawlWalk && (l.kind == NAV_WALK || l.kind == NAV_DROP)) &&
+               (l.head < m_agentHeight || NodeHead(to) < m_agentHeight);
+    }
     struct BadSpawn { Vec3 pos; bool walkers, aliens; };
     std::vector<BadSpawn> m_badSpawns;
     std::vector<std::string> m_useDoors;

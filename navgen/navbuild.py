@@ -23,6 +23,8 @@ import sys
 
 # ---------------------------------------------------------------- parameters
 
+LADDER_DEBUG = False  # --ladder-debug: why each ladder level is linked or not
+
 DEFAULTS = dict(
     cs=16.0,            # horizontal cell size (game units)
     agent_height=120.0,  # Predator/adult Alien: CharacterButes DefaultDims <16, 60, 16> are half-extents
@@ -736,15 +738,23 @@ def ladder_links(spans, bounds, P, owner, comp, ladders, columns=None):
     H = P["agent_height"]
     edges, report = [], []
 
-    def solid_overlap(ix, iz, y0, y1):
+    def solid_overlap(ix, iz, y0, y1, landing=None):
         for lo, hi, _ in columns.get((ix, iz), ()):
+            # the floor the climber steps onto at the top (a slab at the landing height beside the shaft) is not
+            # in the way: the body passes its edge and the feet reach it (evac_colony: both ladders had no link)
+            if landing is not None and abs(lo - landing) <= P["climb"] and abs(hi - landing) <= P["climb"]:
+                continue
             if hi > y0 and lo < y1:
                 return True
         return False
 
-    def shaft_clear(jx, jz, y0, y1):
+    def shaft_clear(jx, jz, y0, y1, landing=None):
         # a character centred on grid corner (jx, jz) covers the 2x2 cells around it
-        return not any(solid_overlap(ix, iz, y0, y1) for ix in (jx - 1, jx) for iz in (jz - 1, jz))
+        cells = [(ix, iz) for ix in (jx - 1, jx) for iz in (jz - 1, jz)]
+        if any(solid_overlap(ix, iz, y0, y1, landing) for ix, iz in cells):
+            return False
+        # a landing slab over all four cells caps the shaft (a ladder under a closed floor)
+        return landing is None or not all(solid_overlap(ix, iz, y0, y1) for ix, iz in cells)
 
     def path_clear(x0, z0, x1, z1, y0, y1):
         # the character's width counts: at each sample, the 2x2 cells around the nearest grid corner
@@ -797,23 +807,38 @@ def ladder_links(spans, bounds, P, owner, comp, ladders, columns=None):
 
             # each level links to the nearest higher level the shaft really leads to (landings that are not
             # reachable from the shaft are skipped; a shaft capped by a ceiling links nothing above it)
+            if LADDER_DEBUG:
+                print(f"  ladder {name} box {[round(v) for v in bmin]}..{[round(v) for v in bmax]}, {len(shafts)} shafts, "
+                      f"levels {[(round(g[0][1][1]), len(g)) for g in ordered]}")
             for i in range(len(ordered) - 1):
                 best = None
                 for j in range(i + 1, len(ordered)):
+                    why = collections.Counter()
                     for jx, jz, sx, sz in shafts:
                         feet = stand_points(ordered[i], sx, sz)
                         tops = stand_points(ordered[j], sx, sz)
                         if not feet or not tops:
+                            why["no foot" if not feet else "no top"] += 1
                             continue
                         foot, top = pick(feet, sx, sz), pick(tops, sx, sz)
                         if top[1][1] - foot[1][1] <= P["climb"] or owner[foot[0]] == owner[top[0]]:
+                            why["same waypoint or step"] += 1
                             continue
-                        if not shaft_clear(jx, jz, foot[1][1] + P["climb"], top[1][1] + H + 16):
+                        if not shaft_clear(jx, jz, foot[1][1] + P["climb"], top[1][1] + H + 16, top[1][1]):
+                            why["shaft blocked"] += 1
+                            if LADDER_DEBUG and why["shaft blocked"] == 1:
+                                hits = [(round(lo), round(hi)) for ix in (jx - 1, jx) for iz in (jz - 1, jz)
+                                        for lo, hi, _ in columns.get((ix, iz), ())
+                                        if hi > foot[1][1] + P["climb"] and lo < top[1][1] + H + 16]
+                                print(f"    shaft {sx:.0f},{sz:.0f} {foot[1][1]:.0f}->{top[1][1]:.0f} blocked by {hits[:6]}")
                             continue
                         score = (math.hypot(foot[1][0] - sx, foot[1][2] - sz) + math.hypot(top[1][0] - sx, top[1][2] - sz)
                                  + 0.25 * math.hypot(sx - cx, sz - cz))
                         if best is None or score < best[0]:
                             best = (score, (sx, sz), foot, top)
+                    if LADDER_DEBUG:
+                        print(f"    level {ordered[i][0][1][1]:.0f} -> {ordered[j][0][1][1]:.0f}: "
+                              f"{'linked' if best else dict(why)}")
                     if best is not None:
                         break
                 ylo = ordered[i][0][1][1]
@@ -846,7 +871,10 @@ def main():
                     help="experimental: teleporter links and the largest-area main-area rule (the bots do not support them yet)")
     for k, v in DEFAULTS.items():
         ap.add_argument("--" + k.replace("_", "-"), type=type(v), default=v)
+    ap.add_argument("--ladder-debug", action="store_true", help="print why each ladder level is linked or not")
     a = ap.parse_args()
+    global LADDER_DEBUG
+    LADDER_DEBUG = a.ladder_debug
     P = {k: getattr(a, k) for k in DEFAULTS}
     mapname = os.path.splitext(os.path.basename(a.obj))[0].lower()
     out = a.out or os.path.dirname(os.path.abspath(a.obj))

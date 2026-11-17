@@ -362,6 +362,9 @@ struct Bot
     // debug lines of the player rules (BotMgr_LikePlayer)
     LTFLOAT burnLogAt;     // next BURN line allowed (one per second while burning)
     LTFLOAT splashLogAt;   // next SPLASHHOLD line allowed (BotMgr_SplashSafe)
+    HOBJECT smartTarget;   // Smart Gun: the target its tracking locked or is locking (BotMgr_AimError)
+    LTFLOAT lockAt;        // the lock holds from then on
+    LTFLOAT lockSeen;      // the last shot at smartTarget (a lock not used for a second is lost)
     bool rowResend;        // its scoreboard row was just added: send its values again at the next row tick
     std::string handWeapon; // the weapon in hand at the last shot attempt (BotMgr_OnFire)
     LTFLOAT weaponReadyAt; // a weapon just taken fires from then on (bots.cfg switchtime)
@@ -435,6 +438,9 @@ struct Config
     bool survGroup;  // Survivor: survivors regroup and hold together (BotMgr_SurvivorDest)
     bool splashSafe; // no splash shot whose straight line meets something inside its blast (BotMgr_SplashSafe)
     float switchTime; // seconds a newly taken weapon needs before it fires (a player's select animation; 0 = off)
+    float smartLock;  // seconds the Smart Gun's tracking needs on a new target; before it, a person's aim (0 = instant)
+    bool endPause;    // the end-of-level scoreboard and Evac's round pause: bots stand still and nobody fights (BotMgr_EndPause)
+    bool crawl;       // a tall alien (Predalien) crouches through passages lower than itself, as players do (BotMgr_FindPath)
     bool preferDrops; // no climb-down link where a drop links the same two waypoints (BotNav::PreferDrops)
     bool headroom;    // bots taller than the graph's agent avoid low waypoints and doorways (hn/he lines)
     bool survHunt;   // Survivor: mutants with nothing to fight go where survivors are heard (BotMgr_SurvivorDest)
@@ -456,6 +462,10 @@ struct Config
     bool evac;       // bots in Evac (the server's defender and attacker races)
     float evacAttackers; // Evac with 'fill': the share of the attackers among players + bots (0.5 = even teams)
     bool evacGroup;   // Evac: defender bots go to the zone together (regroup, the lead waits for the others)
+    float evacGuards; // Evac: the share of attacker bots that hold the evac zone itself (0 = none)
+    float cloakNear;  // a cloaked Predator closer than this is noticed (half the sight rate)
+    float cloakFar;   // up to this distance it is noticed while it moves faster than cloakSpeed, fires or hits
+    float cloakSpeed;
     bool lifecycle;  // follow the server's alien lifecycle option (facehugger -> chestburster -> adult)
     bool hugBody;    // keep a bot facehugger's body awake until its chestburst (as a hugging player does)
     bool testSleepBody; // test aid: put a hugged body to sleep at the attach (what no client nearby does)
@@ -619,6 +629,9 @@ void LoadConfig()
     g_cfg.survGroup = true;
     g_cfg.splashSafe = true;
     g_cfg.switchTime = 0.7f;
+    g_cfg.smartLock = 0.6f;
+    g_cfg.endPause = true;
+    g_cfg.crawl = true;
     g_cfg.preferDrops = true;
     g_cfg.headroom = true;
     g_cfg.survHunt = true;
@@ -639,6 +652,11 @@ void LoadConfig()
     g_cfg.hunt = true;
     g_cfg.evac = true;
     g_cfg.evacAttackers = 0.5f;
+    g_cfg.evacGuards = 0.0f;  // 0.4 measured: defenders won 69 % vs 52 % without (gd_on/gd_off): split hunters lose
+    // players: "they see cloak"; stricter values measured with no change in bot-vs-bot K/D (sl_cloak vs sl_base, DM bal9 x 3)
+    g_cfg.cloakNear = 300.0f;
+    g_cfg.cloakFar = 800.0f;
+    g_cfg.cloakSpeed = 250.0f;
     g_cfg.evacGroup = false;  // measured: no better (eg_on vs eg_off: defenders 42 vs 43 %)
     g_cfg.lifecycle = true;
     g_cfg.hugBody = true;
@@ -695,6 +713,9 @@ void LoadConfig()
         else if (!_stricmp(key, "survgroup")) g_cfg.survGroup = value != 0.0f;
         else if (!_stricmp(key, "splashsafe")) g_cfg.splashSafe = value != 0.0f;
         else if (!_stricmp(key, "switchtime")) g_cfg.switchTime = value < 0.0f ? 0.0f : value;
+        else if (!_stricmp(key, "smartlock")) g_cfg.smartLock = value < 0.0f ? 0.0f : value;
+        else if (!_stricmp(key, "endpause")) g_cfg.endPause = value != 0.0f;
+        else if (!_stricmp(key, "crawl")) g_cfg.crawl = value != 0.0f;
         else if (!_stricmp(key, "preferdrops")) g_cfg.preferDrops = value != 0.0f;
         else if (!_stricmp(key, "headroom")) g_cfg.headroom = value != 0.0f;
         else if (!_stricmp(key, "survhunt")) g_cfg.survHunt = value != 0.0f;
@@ -713,6 +734,10 @@ void LoadConfig()
         else if (!_stricmp(key, "survivor")) g_cfg.survivor = value != 0.0f;
         else if (!_stricmp(key, "hunt")) g_cfg.hunt = value != 0.0f;
         else if (!_stricmp(key, "evac")) g_cfg.evac = value != 0.0f;
+        else if (!_stricmp(key, "cloaknear")) g_cfg.cloakNear = value;
+        else if (!_stricmp(key, "cloakfar")) g_cfg.cloakFar = value;
+        else if (!_stricmp(key, "cloakspeed")) g_cfg.cloakSpeed = value;
+        else if (!_stricmp(key, "evacguards")) g_cfg.evacGuards = value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value;
         else if (!_stricmp(key, "evacgroup")) g_cfg.evacGroup = value != 0.0f;
         else if (!_stricmp(key, "evacattackers")) g_cfg.evacAttackers = value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value;
         else if (!_stricmp(key, "lifecycle")) g_cfg.lifecycle = value != 0.0f;
@@ -1857,8 +1882,8 @@ bool Spawn(Bot& b)
     // a Predalien (140 tall, the graph's agent is 120) does not spawn where every way out is lower (dm_hanger's room at
     // floor -544: Predaliens spawned there never got out)
     const BotClass* spawnCls = b.forcedClass ? b.forcedClass : (g_cfg.classes ? ClassFor(b.species, b.classSlot) : 0);
-    const bool tall = g_cfg.headroom && b.stage == 0 && spawnCls && !_stricmp(spawnCls->name, "Predalien") &&
-                      g_nav.LowNodes() > 0;
+    const bool tall = g_cfg.headroom && !g_cfg.crawl && b.stage == 0 && spawnCls &&
+                      !_stricmp(spawnCls->name, "Predalien") && g_nav.LowNodes() > 0;
     for (int attempt = 0; attempt < 12 && !b.placeAt; ++attempt)
     {
         g_spawningSpecies = b.species;
@@ -2021,6 +2046,9 @@ bool Spawn(Bot& b)
     b.lastHp = 0.0f;
     b.burnLogAt = 0.0f;
     b.splashLogAt = 0.0f;
+    b.smartTarget = LTNULL;
+    b.lockAt = 0.0f;
+    b.lockSeen = 0.0f;
     b.rowResend = false;
     b.weaponReadyAt = 0.0f;
     b.handWeapon.clear();   // a new life starts with its weapon in hand
@@ -2173,13 +2201,20 @@ void UpdateRelations()
     const bool surv = SurvivorMode();
     const int sub = surv && g_pGameServerShell->GetMultiplayerMgr() ? g_pGameServerShell->GetMultiplayerMgr()->GetServerSubState() : -1;
     const bool survPeace = surv && sub != MPMGR_SUBSTATE_SURVIVOR_TAG && sub != MPMGR_SUBSTATE_SURVIVOR_CUT;
+    const bool pause = BotMgr_EndPause();
+    static bool s_wasPause = false;
+    if (pause != s_wasPause)
+    {
+        Log("ENDPAUSE %s", pause ? "on: bots stand still, nobody fights (level end or round pause)" : "off");
+        s_wasPause = pause;
+    }
     for (size_t i = 0; i < g_bots.size(); ++i)
     {
         CAI* ai = g_bots[i].alive ? BotAI(g_bots[i]) : LTNULL;
         if (!ai)
             continue;
-        if (surv)
-            ai->GetDestructible()->SetCanDamage(!(survPeace && sub != MPMGR_SUBSTATE_NONE));
+        if (surv || g_cfg.endPause)
+            ai->GetDestructible()->SetCanDamage(!(pause || (survPeace && sub != MPMGR_SUBSTATE_NONE)));
         const int mine = SpeciesOf(ai);
         for (CCharacterMgr::CharacterIterator it = g_pCharacterMgr->BeginCharacters();
              it != g_pCharacterMgr->EndCharacters(); ++it)
@@ -2190,6 +2225,8 @@ void UpdateRelations()
             bool teammates = teams && mine >= 0 && mine == SpeciesOf(other);
             if (surv)
                 teammates = survPeace || (sub == MPMGR_SUBSTATE_SURVIVOR_CUT && mine >= 0 && mine == SpeciesOf(other));
+            if (pause)
+                teammates = true;
             if (g_bots[i].stage == 1 && other->GetButes() && !other->GetButes()->m_bCanBeFacehugged)
                 teammates = true;  // a facehugger cannot hurt aliens, synthetics or exosuits: no point chasing them
             else if (!teammates && HugAvoid(g_bots[i], ai, other))
@@ -2616,6 +2653,9 @@ void AddBot(BotSpecies sp, const BotClass* forced, LTFLOAT when)
     b.survHoldUntil = 0.0f;
     b.burnLogAt = 0.0f;
     b.splashLogAt = 0.0f;
+    b.smartTarget = LTNULL;
+    b.lockAt = 0.0f;
+    b.lockSeen = 0.0f;
     b.rowResend = false;
     b.weaponReadyAt = 0.0f;
     b.handWeapon.clear();   // a new life starts with its weapon in hand
@@ -2680,6 +2720,17 @@ const BotClass* ParseClass(int sp, const char* word)
 }
 
 } // namespace
+
+// Outside play for everyone: the end-of-level scoreboard (until the next level loads) and the pause between Evac
+// (and Overrun) rounds. The game puts players in god mode then (CPlayerObj::Update) and their clients show the
+// scoreboard; bots kept running and fighting behind it (a player: "how the bots dont stop on map load").
+bool BotMgr_EndPause()
+{
+    MultiplayerMgr* mp = g_pGameServerShell ? g_pGameServerShell->GetMultiplayerMgr() : LTNULL;
+    if (!g_cfg.endPause || !mp)
+        return false;
+    return mp->GetServerState() != MPMGR_STATE_PLAYING || mp->GetServerSubState() == MPMGR_SUBSTATE_TM_ROUND;
+}
 
 // ----------------------------------------------------------------------------------------------
 
@@ -3654,6 +3705,9 @@ struct EvacZoneInfo
 {
     LTVector mn, mx, center;
     std::vector<int> inside;   // waypoints in the zone (floor under its box)
+    // the ones a walker (Marine, Predator) can get to from the main play area: evac_colony's zone holds the roof
+    // of a parked APC, reached only by a drop from a spawn ledge (a fifth of the zone, 1.7 path failures a second)
+    std::vector<int> insideWalk;
     std::vector<int> around;   // waypoints 300-1200 units from it: where attackers wait for the defenders
     std::vector<int> route;    // waypoints on the defenders' ways from their start points to it (the middle part)
 };
@@ -3726,6 +3780,34 @@ void FindEvacZones()
                 if (k >= 0)
                     z.inside.push_back(k);
             }
+            // walkers: the zone waypoints reachable from the main area (the first start point whose walking
+            // reach covers half the graph)
+            {
+                int mainFrom = -1;
+                for (int pass2 = 0; pass2 < 2 && mainFrom < 0; ++pass2)
+                {
+                    HOBJECT hs = LTNULL;
+                    while (mainFrom < 0 &&
+                           (hs = pass2 == 0 ? g_pLTServer->GetNextObject(hs) : g_pLTServer->GetNextInactiveObject(hs)) != LTNULL)
+                    {
+                        if (!dynamic_cast<GameStartPoint*>(g_pLTServer->HandleToObject(hs)))
+                            continue;
+                        LTVector sp3;
+                        g_pLTServer->GetObjectPos(hs, &sp3);
+                        const int from = g_nav.Nearest(avp2bots::Vec3(sp3.x, sp3.y - 40.0f, sp3.z));
+                        if (from >= 0 && g_nav.ReachableCount(from, g_nav.NodeCount(), 1, false) * 2 >= g_nav.NodeCount())
+                            mainFrom = from;
+                    }
+                }
+                for (size_t k = 0; k < z.inside.size(); ++k)
+                {
+                    std::vector<avp2bots::Vec3> pts;
+                    if (mainFrom < 0 || mainFrom == z.inside[k] || g_nav.FindPath(mainFrom, z.inside[k], &pts, 0, 0, 1, 0, false))
+                        z.insideWalk.push_back(z.inside[k]);
+                }
+                if (z.insideWalk.empty())
+                    z.insideWalk = z.inside;
+            }
             // the defenders' ways in: walking paths from their start points (team 1, MultiplayerMgr's
             // FindStartPoint for the defender race) to the zone; attackers wait on their middle part
             if (!z.inside.empty())
@@ -3769,12 +3851,18 @@ void FindEvacZones()
                     }
                 }
             }
-            Log("EVACZONE %.0f %.0f %.0f .. %.0f %.0f %.0f: %d waypoints inside, %d around, %d on the defenders' ways",
-                z.mn.x, z.mn.y, z.mn.z, z.mx.x, z.mx.y, z.mx.z, (int)z.inside.size(), (int)z.around.size(),
-                (int)z.route.size());
+            Log("EVACZONE %.0f %.0f %.0f .. %.0f %.0f %.0f: %d waypoints inside (%d for walkers), %d around, %d on the defenders' ways",
+                z.mn.x, z.mn.y, z.mn.z, z.mx.x, z.mx.y, z.mx.z, (int)z.inside.size(), (int)z.insideWalk.size(),
+                (int)z.around.size(), (int)z.route.size());
             g_evacZones.push_back(z);
         }
     }
+}
+
+int EvacInsideNode(const EvacZoneInfo* z, CAI* pAI)
+{
+    const std::vector<int>& v = (!IsAlien(pAI) && !z->insideWalk.empty()) ? z->insideWalk : z->inside;
+    return v[GetRandom(0, (int)v.size() - 1)];
 }
 
 LTVector EvacNodePos(int k, const LTVector& dims)
@@ -3849,10 +3937,36 @@ bool EvacDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
                 return true;
             }
         }
-        *pDest = EvacNodePos(z->inside[GetRandom(0, (int)z->inside.size() - 1)], dims);
+        *pDest = EvacNodePos(EvacInsideNode(z, pAI), dims);
         if (g_cfg.debug)
             Log("EVACDEST %s defender -> zone (%.0f away)", b->name.c_str(), (*pDest - p).Mag());
         return true;
+    }
+    // Zone guards: a share of the attacker bots hold the evac zone itself, as attacking players camp the evac point
+    // (prod, 16 h: the defenders evacuated in 58 % of the rounds; a player: "noobs can win at evac by simply bypassing
+    // the aliens"). The guards are the attacker bots with the lowest slots, evacGuards of them (rounded up).
+    if (g_cfg.evacGuards > 0.0f && !z->inside.empty())
+    {
+        int attackers = 0, below = 0;
+        for (size_t i = 0; i < g_bots.size(); ++i)
+            if (EvacRole(g_bots[i]) == 1)
+            {
+                ++attackers;
+                below += g_bots[i].slot < b->slot;
+            }
+        const int guards = (int)ceilf(attackers * g_cfg.evacGuards - 0.001f);
+        if (below < guards)
+        {
+            if (InEvacZone(p))
+            {
+                *pHoldUntil = now + GetRandom(4.0f, 8.0f);
+                return true;
+            }
+            *pDest = EvacNodePos(EvacInsideNode(z, pAI), dims);
+            if (g_cfg.debug)
+                Log("EVACDEST %s attacker -> guards the zone (%.0f away)", b->name.c_str(), (*pDest - p).Mag());
+            return true;
+        }
     }
     const int defRace = EvacRace(0);
     CCharacter* best = 0;
@@ -3889,7 +4003,7 @@ bool EvacDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
     // the countdown is announced to everyone (MP_EVAC_COUNTDOWN): attackers rush the zone to stop it
     const bool countdown = BotScoreAccess::EvacState() == MP_EVAC_COUNTDOWN;
     if (countdown && !z->inside.empty())
-        *pDest = EvacNodePos(z->inside[GetRandom(0, (int)z->inside.size() - 1)], dims);
+        *pDest = EvacNodePos(EvacInsideNode(z, pAI), dims);
     else if (best)
     {
         *pDest = best->GetPosition();
@@ -3904,7 +4018,7 @@ bool EvacDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
         if (!z->route.empty() && r < 0.5f)
             *pDest = EvacNodePos(z->route[GetRandom(0, (int)z->route.size() - 1)], dims);
         else if (!z->inside.empty() && (z->around.empty() || r < 0.75f))
-            *pDest = EvacNodePos(z->inside[GetRandom(0, (int)z->inside.size() - 1)], dims);
+            *pDest = EvacNodePos(EvacInsideNode(z, pAI), dims);
         else if (!z->around.empty())
             *pDest = EvacNodePos(z->around[GetRandom(0, (int)z->around.size() - 1)], dims);
         else
@@ -5992,7 +6106,7 @@ void BotMgr_Update()
             }
             g_pLTServer->SetObjectState(ai->m_hObject, OBJSTATE_ACTIVE);
         }
-        else if (now >= b.respawnTime && (!EvacMode() || EvacCanSpawn(b)))
+        else if (now >= b.respawnTime && (!EvacMode() || EvacCanSpawn(b)) && !BotMgr_EndPause())
         {
             Spawn(b);   // (Evac: only while a round is on, with lives left)
         }
@@ -6219,13 +6333,13 @@ void BotMgr_MeleePath(HOBJECT hAI, LTVector& vPath)
 // away, 0 = unseen.
 static int CloakZone(HOBJECT hAI, HOBJECT hTarget, float d2)
 {
-    if (d2 < 400.0f * 400.0f)
+    if (d2 < g_cfg.cloakNear * g_cfg.cloakNear)
         return 2;
-    if (d2 >= 1200.0f * 1200.0f)
+    if (d2 >= g_cfg.cloakFar * g_cfg.cloakFar)
         return 0;
     LTVector v;
     g_pLTServer->GetVelocity(hTarget, &v);
-    if (v.MagSqr() > 100.0f * 100.0f)
+    if (v.MagSqr() > g_cfg.cloakSpeed * g_cfg.cloakSpeed)
         return 1;
     std::map<HOBJECT, LTFLOAT>::const_iterator shot = g_lastShot.find(hTarget);
     if (shot != g_lastShot.end() && g_pLTServer->GetTime() - shot->second < 1.5f)
@@ -6593,7 +6707,23 @@ bool BotMgr_AimError(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vFirePos
     // The Smart Gun aims itself for players (client AutoTargetMgr, TT_MARINE_SMARTGUN): no error, only its
     // barrel spread, except on a cloaked Predator (no lock; a shimmer: twice the error).
     const AIWBM_AIWeapon* w = ai->GetCurrentWeaponButesPtr();
-    const bool tracking = w && !_stricmp(w->Name.c_str(), "Smart_Gun_MP");
+    bool tracking = w && !_stricmp(w->Name.c_str(), "Smart_Gun_MP");
+    // A player's tracking needs a moment to lock a new target (the lock sound); until then it is the
+    // player's own aim (players: "the smartgunner bot is a monster", "most often it's instadeath for me").
+    if (tracking && g_cfg.smartLock > 0.0f)
+        if (Bot* sb = FindBot(hShooter))
+        {
+            const LTFLOAT now = g_pLTServer->GetTime();
+            if (sb->smartTarget != hTarget || now - sb->lockSeen > 1.0f)
+            {
+                sb->smartTarget = hTarget;
+                sb->lockAt = now + g_cfg.smartLock;
+                if (g_cfg.debug)
+                    Log("SMARTLOCK %s locking %s", sb->name.c_str(), ObjectLabel(hTarget).c_str());
+            }
+            sb->lockSeen = now;
+            tracking = now >= sb->lockAt;
+        }
     const float acc = BotMgr_BotAccuracy(hShooter);
     float miss = tracking ? 0.0f : 1.0f - acc;
     if (CCharacter* tc = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hTarget)))
@@ -7929,6 +8059,10 @@ bool BotMgr_AmbushPick(CAI* pAI, LTVector* pDest)
         const AmbushSpot& s = g_ambushSpots[i];
         if (g_nav.IsBlocked(s.from))
             continue;
+        // a bot taller than the clear height at the wall's foot does not start a climb there (a crawling Predalien
+        // went for evac_colony's ladder shaft under a 128 ceiling and stayed at its foot)
+        if (g_cfg.headroom && 2.0f * pAI->GetDims().y > 124.0f && g_nav.NodeHead(s.from) < 2.0f * pAI->GetDims().y)
+            continue;
         const LTVector e(s.enter.x, s.enter.y, s.enter.z);
         if ((e - pos).MagSqr() > kAmbushTripMax * kAmbushTripMax)
             continue;
@@ -8603,11 +8737,17 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
     const LTVector& dims = pAI->GetDims();
     // a bot taller than the graph's agent (120: a Predalien is 140) avoids low waypoints and doorways (hn/he lines):
     // it stopped 24 units before every 128-high lintel (hot_nav: 26 % of the stuck reports on 8 maps)
+    // With crawl, it goes through them crouched instead, as a Predalien player does (an alien crouching is in
+    // wall-walk mode: a cube of half its height, CharacterMovement::GetDimsSetting): evac_colony's alien spawn room
+    // has no way out higher than 140, and Predaliens spawned there failed every path (5 a second).
+    const float tallH = g_cfg.headroom && 2.0f * dims.y > 124.0f ? 2.0f * dims.y : 0.0f;
+    const bool crawl = tallH > 0.0f && g_cfg.crawl && g_cfg.wallwalk && IsAlien(pAI) &&
+                       pAI->GetMovement()->GetCharacterButes()->m_bWallWalk;
     struct AgentHeightScope
     {
-        explicit AgentHeightScope(float h) { g_nav.SetAgentHeight(h); }
-        ~AgentHeightScope() { g_nav.SetAgentHeight(0.0f); }
-    } agentHeight(g_cfg.headroom && 2.0f * dims.y > 124.0f ? 2.0f * dims.y : 0.0f);
+        AgentHeightScope(float h, bool crawlWalk) { g_nav.SetAgentHeight(h); g_nav.SetCrawlWalk(crawlWalk); }
+        ~AgentHeightScope() { g_nav.SetAgentHeight(0.0f); g_nav.SetCrawlWalk(false); }
+    } agentHeight(tallH, crawl);
     int a = g_nav.Nearest(Vec3(p.x, p.y - dims.y, p.z));
     int b = g_nav.Nearest(Vec3(vDest.x, vDest.y - dims.y, vDest.z));
     // a wall ambush (BotMgr_AmbushPick): the path goes to the floor in front of the wall, then onto the wall point
@@ -8636,6 +8776,7 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
     std::vector<Vec3> pts;
     std::vector<avp2bots::NavLinkKind> kinds;
     std::vector<avp2bots::NavLink> links;
+    std::vector<int> pathNodes;
     // wall approach: an alien going for a target that faces it, farther than a pounce, keeps off the open floor in
     // front of the target: walk links ending there (the target's floor level, inside the 60-degree half cone of
     // CAITarget::IsFacing) cost twice as much, wall climbs half as much (cancelling their x2; values my choice)
@@ -8667,7 +8808,7 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
             }
         }
     }
-    if (a < 0 || b < 0 || !g_nav.FindPath(a, b, &pts, 0, &kinds, allowLadders, &links, allowClimb, pBias))
+    if (a < 0 || b < 0 || !g_nav.FindPath(a, b, &pts, &pathNodes, &kinds, allowLadders, &links, allowClimb, pBias))
     {
         // count the failure toward 'isolated' only when the bot stands on a small island of the graph
         // (failing to reach an unreachable target from the main area is normal)
@@ -8717,7 +8858,7 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
     };
     std::vector<Step> steps;
     float prevFloor = p.y - dims.y;
-    int ladders = 0, climbs = 0;
+    int ladders = 0, climbs = 0, crawls = 0;
     const Vec3 up(0.0f, 1.0f, 0.0f);
     for (size_t i = 0; i < kinds.size(); ++i)
     {
@@ -8784,6 +8925,36 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
             steps.push_back(s3);
             steps.push_back(s4);
             ++ladders;
+        }
+        else if (crawl && i < links.size() && i < pathNodes.size() &&
+                 (links[i].head < tallH || g_nav.NodeHead(pathNodes[i]) < tallH))
+        {
+            // a passage lower than the bot: crouched (wall-walk on the floor, positions on the surface); the next
+            // MoveTo stands it up again. A drop (evac_fury151's attacker platforms end under a low lintel): crouched to
+            // 32 units before the edge, then MoveTos off it (a wall-walking alien sticks to the edge and never falls)
+            if (kinds[i] == avp2bots::NAV_DROP)
+            {
+                const Vec3 from = i > 0 ? pts[2 * i - 1] : Vec3(p.x, p.y - dims.y, p.z);
+                const float dx = portal.x - from.x, dz = portal.z - from.z, dl = sqrtf(dx * dx + dz * dz);
+                if (dl > 40.0f)
+                {
+                    Step s0 = {Vec3(portal.x - dx / dl * 32.0f, portal.y, portal.z - dz / dl * 32.0f),
+                               CAIPathWaypoint::eInstructionWallWalkTo, true, true, up};
+                    steps.push_back(s0);
+                }
+                Step s1 = {portal, CAIPathWaypoint::eInstructionMoveTo, true, false, up};
+                Step s2 = {node, CAIPathWaypoint::eInstructionMoveTo, false, false, up};
+                steps.push_back(s1);
+                steps.push_back(s2);
+            }
+            else
+            {
+                Step s1 = {portal, CAIPathWaypoint::eInstructionWallWalkTo, true, true, up};
+                Step s2 = {node, CAIPathWaypoint::eInstructionWallWalkTo, true, true, up};
+                steps.push_back(s1);
+                steps.push_back(s2);
+            }
+            ++crawls;
         }
         else
         {
@@ -8895,9 +9066,9 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
         w.SetArgumentPosition(LTVector(simple[i].pos.x, simple[i].pos.y + lift, simple[i].pos.z));
         pPath->AddWaypoint(w);
     }
-    if (g_cfg.debug || ladders || climbs || ambush)
-        Log("PATH ai=%s from=%d to=%d steps=%u ladders=%d climbs=%d%s%s expanded=%d", ObjectLabel(pAI->m_hObject).c_str(),
-            a, b, (unsigned)simple.size(), ladders, climbs, pBias ? " wallapproach" : "", ambush ? " ambush" : "",
+    if (g_cfg.debug || ladders || climbs || ambush || crawls)
+        Log("PATH ai=%s from=%d to=%d steps=%u ladders=%d climbs=%d crawls=%d%s%s expanded=%d", ObjectLabel(pAI->m_hObject).c_str(),
+            a, b, (unsigned)simple.size(), ladders, climbs, crawls, pBias ? " wallapproach" : "", ambush ? " ambush" : "",
             g_nav.LastExpanded());
     g_pathFails.erase(pAI->m_hObject);  // a path found: not isolated
     return LTTRUE;

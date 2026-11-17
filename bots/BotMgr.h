@@ -242,6 +242,8 @@ void BotMgr_OnFacehugAttach(HOBJECT hHugger, HOBJECT hBody, int nHostSet);
 bool BotMgr_ChestbursterGrown(HOBJECT hObj, int nNewSet);
 // A chestburster bot keeps away from the fight while it grows (BotRoamGoal; bots.cfg 'cbhide').
 bool BotMgr_HideDest(CAI* pAI, LTVector* pDest);
+// the end-of-level scoreboard or a pause between rounds: bots stand still like the players (bots.cfg endpause)
+bool BotMgr_EndPause();
 void BotMgr_SurvivorNewRound(bool lastRound);
 // Evac (MultiplayerMgr::Update_Evac, MID_MPMGR_START_GAME; hooks 'evaccount', 'evacstartcount', 'evacstart',
 // 'evacround', 'evacalive', 'evaczone'): bots per team (0 defenders, 1 attackers), bots with lives left this round,

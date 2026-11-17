@@ -162,6 +162,16 @@ def main():
          r"(\n\t\t\t// Update our movement \(this will be a second time\) so that any\n)",
          lambda m: m.group(1) + "\n\t\t\t// @TAG: Marine and Predator bots strafe while they fire, as players do\n"
                    "\t\t\tif( BotMgr_IsBot(m_hObject) )\n\t\t\t\tBotMgr_CombatMove(this);\n" + m.group(2)),
+        # the end-of-level scoreboard and the pause between rounds: players stand still behind the scoreboard; the
+        # bots' goals kept walking them about (a real-client test: up to 600 units in 16 s)
+        ("botpause",
+         r"(\t\t// Stop any movement if we are recharging\.\n\t\tif\( m_bRechargingExosuit \)\n\t\t\{\n"
+         r"\t\t\tm_dwMovementFlags &= ~\(CM_FLAG_FORWARD \| CM_FLAG_BACKWARD\);\n"
+         r"\t\t\tm_dwMovementFlags &= ~\(CM_FLAG_STRAFERIGHT \| CM_FLAG_STRAFELEFT\);\n\t\t\}\n)",
+         lambda m: m.group(1) + "\n\t\t// @TAG: the end-of-level scoreboard or a round pause: bots stand still, as players do\n"
+                   "\t\tif( BotMgr_IsBot(m_hObject) && BotMgr_EndPause() )\n\t\t{\n"
+                   "\t\t\tm_dwMovementFlags &= ~(CM_FLAG_FORWARD | CM_FLAG_BACKWARD | CM_FLAG_JUMP);\n"
+                   "\t\t\tm_dwMovementFlags &= ~(CM_FLAG_STRAFERIGHT | CM_FLAG_STRAFELEFT);\n\t\t}\n"),
     ])
 
     print("AIStrategyApproachTarget.cpp")
@@ -560,6 +570,21 @@ def main():
 
     # Evac (Update_Evac, MID_MPMGR_START_GAME): bots are defenders and attackers with lives, and a defender bot in the
     # evac zone counts like a player there
+    # prod Hunt crash 2026-11-16 15:20 UTC: AV read 0x38 in AICombatGoal::IsMoreDangerous (FindNewTarget <- AttackGoal::
+    # GetBid): a damager holding no current weapon (a character between weapons or respawning) -> GetCurWeapon() == NULL
+    print("AICombatGoal.cpp (null weapon)")
+    patch("ObjectDLL/AICombatGoal.cpp", [
+        ("dangerweapon",
+         r"^(\t\tpAttachedWeapon = dynamic_cast<CAttachmentWeapon\*>\(pAttach->GetRightHand\(\)\.GetAttachment\(\)\);\n)"
+         r"\t\tif \(pAttachedWeapon\)\n\t\t\{\n"
+         r"\t\t\tconst AMMO \* pAmmo = pAttachedWeapon->GetWeapons\(\)->GetCurWeapon\(\)->GetAmmoData\(\);\n",
+         lambda m: m.group(1)
+         + "\t\t// @TAG: a damager between weapons (or respawning) has no current weapon: use the last damage\n"
+         + "\t\tCWeapon * pCurWeapon = (pAttachedWeapon && pAttachedWeapon->GetWeapons()) ? pAttachedWeapon->GetWeapons()->GetCurWeapon() : LTNULL;\n"
+         + "\t\tconst AMMO * pAmmo = pCurWeapon ? pCurWeapon->GetAmmoData() : LTNULL;\n"
+         + "\t\tif (pAmmo)\n\t\t{\n"),
+    ])
+
     print("MultiplayerMgr.cpp (evac)")
     patch("ObjectDLL/MultiplayerMgr.cpp", [
         ("evaccount",

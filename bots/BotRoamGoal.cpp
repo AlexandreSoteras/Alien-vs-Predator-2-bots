@@ -75,6 +75,18 @@ void BotRoamGoal::Update()
 
     const LTFLOAT now = g_pLTServer->GetTime();
 
+    // the end-of-level scoreboard or a pause between rounds: players stand still, so do bots
+    if (BotMgr_EndPause())
+    {
+        if (m_Follow.IsSet())
+        {
+            m_Follow.Clear();
+            GetAIPtr()->SetNextAction(CAI::ACTION_IDLE);
+        }
+        m_fRetryTime = now + 1.0f;
+        return;
+    }
+
     // a chestburster hides until it grows (BotMgr decides where and when to run)
     {
         LTVector hide;

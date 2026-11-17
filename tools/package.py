@@ -103,6 +103,12 @@ splashsafe = 1
 switchtime = 0.7
 preferdrops = 1
 headroom = 1
+# A Predalien crouches through passages lower than itself, as players do
+crawl = 1
+# The Smart Gun's tracking needs this many seconds to lock a new target (before it, a person's aim)
+smartlock = 0.6
+# The end-of-level scoreboard and the pause between Evac rounds: bots stand still and nobody fights, as players
+endpause = 1
 
 # Follow the server's alien lifecycle option (facehugger -> chestburster -> adult)
 lifecycle = 1

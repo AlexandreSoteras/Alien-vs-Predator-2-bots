@@ -21,7 +21,7 @@ float DistXZ(const Vec3& a, const Vec3& b)
     return std::sqrt(dx * dx + dz * dz);
 }
 
-BotNav::BotNav() : m_useLadders(false), m_lastExpanded(0), m_agentHeight(0.0f) {}
+BotNav::BotNav() : m_useLadders(false), m_lastExpanded(0), m_agentHeight(0.0f), m_crawlWalk(false) {}
 
 bool PathBias::InCone(const Vec3& p) const
 {
@@ -414,7 +414,7 @@ bool BotNav::FindPath(int a, int b, std::vector<Vec3>* points, std::vector<int>*
             int t = ls[i].to;
             if (closed[t] || ls[i].blocked || (t != b && IsBlocked(t)) || (ls[i].kind == NAV_LADDER && !ladders) ||
                 ((ls[i].kind == NAV_CLIMB || ls[i].kind == NAV_CLIMBDOWN) && !allowClimb) ||
-                (m_agentHeight > 0.0f && (ls[i].head < m_agentHeight || NodeHead(t) < m_agentHeight)))
+                TooLow(ls[i], t))
                 continue;
             float c = ls[i].cost;
             if (bias)
@@ -476,7 +476,7 @@ int BotNav::ReachableCount(int from, int limit, int allowLadders, bool allowClim
             const int t = ls[i].to;
             if (seen[t] || ls[i].blocked || IsBlocked(t) || (ls[i].kind == NAV_LADDER && !ladders) ||
                 ((ls[i].kind == NAV_CLIMB || ls[i].kind == NAV_CLIMBDOWN) && !allowClimb) ||
-                (m_agentHeight > 0.0f && (ls[i].head < m_agentHeight || NodeHead(t) < m_agentHeight)))
+                TooLow(ls[i], t))
                 continue;
             seen[t] = 1;
             queue.push_back(t);
