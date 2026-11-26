@@ -244,6 +244,14 @@ bool BotMgr_ChestbursterGrown(HOBJECT hObj, int nNewSet);
 bool BotMgr_HideDest(CAI* pAI, LTVector* pDest);
 // the end-of-level scoreboard or a pause between rounds: bots stand still like the players (bots.cfg endpause)
 bool BotMgr_EndPause();
+// the client id a character's FX carries (CCharacter::CreateSpecialFX): a bot's scoreboard row id, else 0
+uint32 BotMgr_SfxClientId(HOBJECT hObj);
+// a stunned bot only stops moving, as a stunned player (bots.cfg stunfire); false: the AI's stun action
+bool BotMgr_StunFire(HOBJECT hObj);
+// a Predator bot's melee action (AIActionFireMelee::Update): 1 run at the target, -1 strike now, 0 the AI's ranges
+int BotMgr_MeleeReach(CAI* pAI, float fTargetRangeSqr);
+// the blast of a projectile whose shooter is gone (a dead bot) goes off in multiplayer (bots.cfg orphanblasts)
+bool BotMgr_OrphanBlasts();
 void BotMgr_SurvivorNewRound(bool lastRound);
 // Evac (MultiplayerMgr::Update_Evac, MID_MPMGR_START_GAME; hooks 'evaccount', 'evacstartcount', 'evacstart',
 // 'evacround', 'evacalive', 'evaczone'): bots per team (0 defenders, 1 attackers), bots with lives left this round,

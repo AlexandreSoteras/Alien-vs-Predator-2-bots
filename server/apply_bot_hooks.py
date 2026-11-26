@@ -992,6 +992,82 @@ def main():
                    "\t\treturn;\n"),
     ])
 
+    print("Explosion.cpp (the blast of a shooter who is gone)")
+    patch("ObjectDLL/Explosion.cpp", [
+        ("include", r'^(#include "Explosion\.h"[^\n]*\n)',
+         lambda m: m.group(1) + '#include "BotMgr.h" // @TAG\n'),
+        # Explosion::Setup returned at once when the shooter no longer exists (the projectile's LTSmartLink went null):
+        # the explosion neither went off nor was removed. A bot's object is removed when it dies, so the rocket,
+        # grenade or plasma bolt of a bot killed before it landed did no damage and its Explosion object stayed until
+        # the end of the level (CENSUS: +2 a minute on a busy server). A player's object outlives his death, so
+        # players rarely met this. In multiplayer it goes off; Explosion::DamageObjectsInSphere then counts the blast
+        # itself as the damager, as for any blast without a shooter.
+        ("botorphanblast",
+         r"^\tif\(!expCS\.hFiredFrom\) return;\n",
+         lambda m: "\t// @TAG: in multiplayer the blast of a shooter who is gone (a dead bot) still goes off\n"
+                   "\tif(!expCS.hFiredFrom && !BotMgr_OrphanBlasts()) return;\n"),
+    ])
+
+    print("AIActionMisc.cpp (a Predator bot's melee reach)")
+    patch("ObjectDLL/AIActionMisc.cpp", [
+        # AIActionFireMelee::Update: the AI strikes (StandFire, a standing animation) only within its ideal range (spear
+        # 60-100) and runs again (RunF) as soon as the target is beyond it, which cancels a strike under way; a target
+        # that backs away was never hit (players: "Predators with melee can't attack if you keep moving backward ...
+        # they cancel as soon as you move out of their range ... they just follow you indefinitely")
+        ("botmeleereach",
+         r"^(\t\tif\( )(fTargetRangeSqr > weapon_butes\.fMaxIdealRange\*weapon_butes\.fMaxIdealRange) \)\n",
+         lambda m: "\t\t// @TAG: a Predator bot strikes by its weapon's reach and the target's speed, and finishes a strike\n"
+                   "\t\t// it began (BotMgr_MeleeReach: 1 chase, -1 strike, 0 the AI's ranges)\n"
+                   "\t\tconst int nBotReach = BotMgr_MeleeReach(GetAIPtr(), fTargetRangeSqr);\n"
+                   "\t\tif( nBotReach > 0 || (nBotReach == 0 && " + m.group(2) + ") )\n"),
+        ("botmeleereach2",
+         r"^(\t\telse if\( )(fTargetRangeSqr < weapon_butes\.fMinIdealRange\*weapon_butes\.fMinIdealRange \))\n",
+         lambda m: m.group(1) + "nBotReach == 0 && " + m.group(2) + " // @TAG\n"),
+    ])
+
+    print("AI.cpp/.h (a stunned bot can still turn and fire, as a stunned player)")
+    patch("ObjectDLL/AI.cpp", [
+        # CAI::HandleStunEffect starts AIActionStun: no aim, no fire, no turn (and it cannot be interrupted). A stunned
+        # player cannot move but still turns (slowly) and fires (the client only blocks movement; the server's weapon
+        # fire has no stun check). Players: "stunned characters can't fight back".
+        ("botstun",
+         r"^(void CAI::HandleStunEffect\(\)\n\{\n)",
+         lambda m: m.group(1) + "\t// @TAG: a bot is stunned as a player is (CCharacter's: no movement), and turns and fires\n"
+                   "\tif( BotMgr_StunFire(m_hObject) )\n\t{\n"
+                   "\t\tCCharacter::HandleStunEffect();\n"
+                   "\t\tif( !IsNetted() )\n\t\t\tm_cmMovement.AllowRotation(LTTRUE);\n"
+                   "\t\treturn;\n\t}\n\n"),
+        ("botstunupd",
+         r"^(void CAI::UpdateStunEffect\(\) *\n\{\n)",
+         lambda m: m.group(1) + "\t// @TAG: the end of a bot's stun (CCharacter's: when USRFLG_CHAR_STUNNED goes); the net\n"
+                   "\t// keeps its own hold until it is gone\n"
+                   "\tif( BotMgr_StunFire(m_hObject) )\n\t{\n"
+                   "\t\tif( !IsNetted() )\n\t\t\tCCharacter::UpdateStunEffect();\n"
+                   "\t\treturn;\n\t}\n\n"),
+    ])
+    patch("ObjectDLL/AI.h", [
+        ("botstunned",
+         r"^\t\tvirtual LTBOOL\tIsStunned\(\) const \{ return \(GetCurrentAction\(\) && GetCurrentAction\(\) == m_aActions\[ACTION_STUN\]\); \}\n",
+         lambda m: "\t\t// @TAG: a bot's stun is CCharacter's (its stun effect, set only for bots: BotMgr 'stunfire')\n"
+                   "\t\tvirtual LTBOOL\tIsStunned() const { return (GetCurrentAction() && GetCurrentAction() == m_aActions[ACTION_STUN]) || CCharacter::IsStunned(); }\n"),
+    ])
+
+    print("Character.cpp/.h (a bot's character FX carries its scoreboard row id)")
+    patch("ObjectDLL/Character.cpp", [
+        # CCharacter::CreateSpecialFX: the client keys a character's team (Smart Gun friend filter, SFXObjectFilterFn)
+        # and its name under the crosshair (UpdateInfoString) on cs.nClientID, 0 for every AI: a Marine player's
+        # Smart Gun locked on Marine bots and no bot showed a name. A bot gets its scoreboard row id (200+).
+        ("botsfxid",
+         r"^(\t\t\telse\n\t\t\t\tcs\.nClientID = m_nPreCreateClientID;\n\t\t\}\n\t\}\n)",
+         lambda m: m.group(1) + "\t// @TAG: a bot's row id (the clients know it from MID_MPMGR_ADD_CLIENT)\n"
+                   "\telse\n\t\tcs.nClientID = BotMgr_SfxClientId(m_hObject);\n"),
+    ])
+    patch("ObjectDLL/Character.h", [
+        ("botsfx", r"^(\t\tvirtual void\tForceCloakOff\(LTBOOL bDelay=LTFALSE\);\n)",
+         lambda m: m.group(1) + "\t\t// @TAG: BotMgr rewrites a new bot's FX message once its scoreboard row exists\n"
+                   "\t\tvoid\t\t\tBotCreateSFX()\t\t\t\t{ CreateSpecialFX(); }\n"),
+    ])
+
 
 def server_ext():
     """Hooks of the server extension points (bots/ServerExt.h; no-ops in the public build): joins, leaves, renames, chat,

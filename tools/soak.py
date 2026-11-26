@@ -39,12 +39,15 @@ def main():
     ap.add_argument("--bots", default="marines=4 aliens=4 predators=4 respawn=4 log=1 debug=0 classes=1 ladders=1 cloak=1")
     ap.add_argument("--logmax", type=float, default=1.0, help="bots.cfg logmax in MB (small, to see the rotation)")
     ap.add_argument("--lto", default=os.path.join(farm.ROOT, "server", "out", "object.lto"))
+    ap.add_argument("--slot-base", type=int, default=0, help="first farm/s<N> slot (to run several soaks side by side)")
+    ap.add_argument("--tag", default="", help="report name: farm/soak_<tag>_<gametype><k>.md")
     a = ap.parse_args()
     maps = [m.strip().lower() for m in a.maps.split(",") if m.strip()]
     gts = [g.strip() for g in a.gametypes.split(",") if g.strip()]
 
     servers = []
-    for slot, gt in enumerate(gts):
+    for k, gt in enumerate(gts):
+        slot = a.slot_base + k
         bots = a.bots + f" logmax={a.logmax:g}"
         d, port = farm.setup(slot, maps[0], bots, a.lto, gt, 0 if gt == "tdm" else None, a.maptime)
         # the whole rotation and every map's waypoints
@@ -63,7 +66,7 @@ def main():
             if os.path.exists(os.path.join(d, f)):
                 os.remove(os.path.join(d, f))
         p = subprocess.Popen([os.path.join(d, "AvP2Serv.exe"), "-config", "farm"], cwd=d)
-        servers.append(dict(gt=gt, d=d, port=port, p=p, samples=[]))
+        servers.append(dict(gt=gt, k=k, d=d, port=port, p=p, samples=[]))
         print(f"[{time.strftime('%H:%M:%S')}] {gt}: port {port}, pid {p.pid}, {len(maps)} maps x {a.maptime} min", flush=True)
 
     start = time.time()
@@ -91,7 +94,8 @@ def main():
         crashes = open(crash, encoding="latin-1").read().count("=== exception") if os.path.exists(crash) else 0
         worlds = re.findall(r" WORLD map=(\S+)", text)
         mems = [m for _, ok, m in s["samples"] if ok and m]
-        out = os.path.join(farm.FARM, f"soak_{s['gt']}.md")
+        name = f"{a.tag}_{s['gt']}{s['k']}" if a.tag else s['gt']
+        out = os.path.join(farm.FARM, f"soak_{name}.md")
         with open(out, "w", encoding="utf-8") as f:
             f.write(f"# Soak {s['gt']}: {a.minutes} min, {len(maps)} maps x {a.maptime} min, logmax {a.logmax} MB\n\n")
             f.write(f"- alive at the end: {alive}; crashes: {crashes}\n")
@@ -107,7 +111,7 @@ def main():
             for t, ok, m in s["samples"]:
                 f.write(f"| {t} | {ok} | {m / 1024:.0f} |\n")
         if crashes:
-            shutil.copyfile(crash, os.path.join(farm.FARM, f"soak_{s['gt']}_crash.txt"))
+            shutil.copyfile(crash, os.path.join(farm.FARM, f"soak_{name}_crash.txt"))
         print("wrote", out, flush=True)
 
 

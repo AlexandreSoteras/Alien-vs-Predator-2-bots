@@ -109,6 +109,30 @@ crawl = 1
 smartlock = 0.6
 # The end-of-level scoreboard and the pause between Evac rounds: bots stand still and nobody fights, as players
 endpause = 1
+# A bot's name under the crosshair, and the Smart Gun knows its team (needs scoreboard)
+nametags = 1
+# A netted bot cuts its way out (blades, claws, knife)
+netescape = 1
+# Smart Gun, SADAR and Minigun: walk, as players must
+heavywalk = 1
+# A stunned bot cannot move but still turns and fires
+stunfire = 1
+# The pounce cry players hear from an alien's pounce
+pouncecry = 1
+# Marine bots back away from aliens and blades while they shoot
+backpedal = 1
+# A burning enemy is noticed faster, and seen through a cloak
+seeburning = 1
+# Seconds a bot keeps watching where a live enemy left its sight (0 = off)
+alert = 5
+# Bots ignore bodies, blood and death cries
+nocorpselook = 1
+# A Predator bot strikes by its weapon's reach and finishes a swing it began
+meleereach = 1
+# The rocket or grenade of a bot killed before it landed still explodes
+orphanblasts = 1
+# Ask for the low-fragmentation heap at start (Wine hosts)
+lfh = 1
 
 # Follow the server's alien lifecycle option (facehugger -> chestburster -> adult)
 lifecycle = 1
@@ -128,7 +152,8 @@ score = 1
 # Count bots as players in the server list (one slot always shows free); say "bots" in your server name
 listbots = 0
 
-# Experimental (not yet tested with a real client): bots on the scoreboard, with kill messages
+# Bots on the players' scoreboard, with kill messages, their name under the crosshair and their team for the
+# Smart Gun (1 on our live servers since 2026-11-12)
 scoreboard = 0
 
 # Logs (avp2bots_bots.log next to AvP2Serv.exe, about 70 MB a day with 12 bots); debug = very verbose.

@@ -64,6 +64,7 @@
 using avp2bots::BotNav;
 using avp2bots::Vec3;
 
+
 // the cloak's server variables (Character.cpp: CloakDelay, CloakCostPerSec, CloakInitialCost)
 extern CVarTrack g_cvarCloakDelayTime;
 extern CVarTrack g_cvarCloakCostPerSecond;
@@ -191,11 +192,14 @@ struct CombatMove
     int zzSide;
     LTFLOAT zzUntil;
     int zzSets, zzFlips, zzFail;
+    bool jumped;           // a combat jump under way (DriveCombatMove plays Jump/Fall/Land until it is back down)
+    int jumps;
 
     CombatMove() { Reset(); }
     void Reset()
     {
-        moving = hasLeg = false;
+        moving = hasLeg = jumped = false;
+        jumps = 0;
         legDest = LTVector(0, 0, 0);
         legStart = legUntil = 0.0f;
         side = 0;
@@ -283,6 +287,7 @@ struct Bot
     LTFLOAT mediUntil;
     bool mediKeyDone;      // the medicomp's heal (medicomp_key) is done
     bool walkOnly;         // BotMgr made the bot walk (sift, medicomp)
+    bool heavy;            // it holds a heavy weapon and walks (HeavyUpkeep)
     LTFLOAT lastShot;      // last shot (re-cloaking waits for a pause in the shooting)
     int cloakWas;          // cloak state at the last upkeep (activation costs energy)
     // Predator ammo as a player's (bots.cfg 'predammo'): spears left, the one disc out (thrown, flying or
@@ -365,6 +370,16 @@ struct Bot
     HOBJECT smartTarget;   // Smart Gun: the target its tracking locked or is locking (BotMgr_AimError)
     LTFLOAT lockAt;        // the lock holds from then on
     LTFLOAT lockSeen;      // the last shot at smartTarget (a lock not used for a second is lost)
+    // the last character that hurt this bot and when (CreditedKiller: a death by a burning or acid patch, a fall or a
+    // removed damager goes to it rather than reading "killed himself")
+    LTSmartLink lastFoe;
+    LTFLOAT lastFoeAt;
+    // netted (NetEscapeUpkeep): since when, and the next cut at the net
+    LTFLOAT netSince, netCutAt;
+    int netCuts;
+    // the row id the live object's character FX carries (BotMgr_SfxClientId); not given to another row meanwhile
+    uint32 sfxId;
+    LTFLOAT strikeCommitUntil;   // a Predator's melee swing under way (BotMgr_MeleeReach)
     bool rowResend;        // its scoreboard row was just added: send its values again at the next row tick
     std::string handWeapon; // the weapon in hand at the last shot attempt (BotMgr_OnFire)
     LTFLOAT weaponReadyAt; // a weapon just taken fires from then on (bots.cfg switchtime)
@@ -420,7 +435,8 @@ struct Bot
     LTFLOAT glanceAt;
     float glanceDist;
     HOBJECT lastTarget;
-    int hearOnsets;            // debug statistics of this life: hearing onsets, targets taken after hearing
+    LTSmartLink lastTargetLink;  // the same, null once the object is gone (the alert reads it)
+    int hearOnsets;           // debug statistics of this life: hearing onsets, targets taken after hearing
 };
 
 struct Config
@@ -489,6 +505,20 @@ struct Config
     bool altFire;  // Marine bots fire their alt barrels with the ammo a player would have (pulse-rifle grenades)
     bool feed;     // hurt alien bots heal on bodies (claws, head bite), as alien players do
     bool headbite; // Drone and Runner bots head-bite live targets (instant kill) under a cautious rule
+    bool netEscape; // a netted bot cuts its way out with its blades or claws, as players do (0 = waits out NetTime)
+    bool nameTags;  // a bot's character FX carries its row id: name under the crosshair, team for the Smart Gun
+    bool heavyWalk; // a bot walks with the Smart Gun, the SADAR or the Minigun, as players must (SpeedMod 0)
+    bool stunFire;  // a stunned bot can still turn (slowly) and fire, as a stunned player; it only cannot move
+    bool pounceCry; // a bot's pounce plays the pounce cry other players hear from a pouncing player
+    bool backpedal; // Marine bots back away from aliens and blades while they shoot (their "Backoff" run-back)
+    bool seeBurning; // a burning enemy is noticed twice as fast, and a burning Predator is seen through its cloak
+    float alertTime; // seconds a Marine or Predator bot watches where a live enemy left its sight (0 = off)
+    bool census;     // diagnostics: the world's objects counted per class every 60 s (CENSUS lines)
+    bool lfh;        // ask every heap of the process for the low-fragmentation heap at start (Wine hosts)
+    bool orphanBlasts; // the rocket or grenade of a bot killed before it landed still explodes (hook botorphanblast)
+    float combatJump;  // chance that a Marine or Predator bot jumps at the start of a strafe leg (0 = never)
+    bool noCorpseLook; // bots ignore bodies, blood and death cries (the single-player AI investigated them)
+    bool meleeReach;   // a Predator bot strikes by its weapon's reach and the target's speed, and finishes a swing
     bool tail;     // alien bots use the charged tail at its multiplayer reach
     bool pounceStun; // a bot's pounce stuns its victim as a player's does
     bool clawSpread; // bot melee strikes spread like players' (unit path)
@@ -507,6 +537,8 @@ Config g_cfg;
 FILE* g_log = 0;
 int g_spawnSerial = 0;
 LTFLOAT g_nextStatus = 0.0f;
+LTFLOAT g_nextCensus = 0.0f;   // bots.cfg census: object counts per class every 60 s (ObjectCensus)
+long g_spawnsTotal = 0;        // bot spawns since the server started (census lines)
 LTFLOAT g_nextRelations = 0.0f;
 LTFLOAT g_nextCommandPoll = 0.0f;
 LTFLOAT g_nextTeamLog = 0.0f;
@@ -677,6 +709,20 @@ void LoadConfig()
     g_cfg.zigzag = true;
     g_cfg.feed = true;
     g_cfg.headbite = true;
+    g_cfg.netEscape = true;
+    g_cfg.nameTags = true;
+    g_cfg.heavyWalk = true;
+    g_cfg.stunFire = true;
+    g_cfg.pounceCry = true;
+    g_cfg.backpedal = true;
+    g_cfg.seeBurning = true;
+    g_cfg.alertTime = 5.0f;
+    g_cfg.noCorpseLook = true;
+    g_cfg.meleeReach = true;
+    g_cfg.census = false;
+    g_cfg.lfh = true;
+    g_cfg.orphanBlasts = true;
+    g_cfg.combatJump = 0.0f;   // off until measured and seen with a client (0.15 was the planned value)
     g_cfg.tail = true;
     g_cfg.pounceStun = true;
     g_cfg.clawSpread = true;
@@ -757,6 +803,20 @@ void LoadConfig()
         else if (!_stricmp(key, "hearlevel")) g_cfg.hearLevel = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
         else if (!_stricmp(key, "feed")) g_cfg.feed = value != 0.0f;
         else if (!_stricmp(key, "headbite")) g_cfg.headbite = value != 0.0f;
+        else if (!_stricmp(key, "netescape")) g_cfg.netEscape = value != 0.0f;
+        else if (!_stricmp(key, "nametags")) g_cfg.nameTags = value != 0.0f;
+        else if (!_stricmp(key, "heavywalk")) g_cfg.heavyWalk = value != 0.0f;
+        else if (!_stricmp(key, "stunfire")) g_cfg.stunFire = value != 0.0f;
+        else if (!_stricmp(key, "pouncecry")) g_cfg.pounceCry = value != 0.0f;
+        else if (!_stricmp(key, "backpedal")) g_cfg.backpedal = value != 0.0f;
+        else if (!_stricmp(key, "seeburning")) g_cfg.seeBurning = value != 0.0f;
+        else if (!_stricmp(key, "alert")) g_cfg.alertTime = value < 0.0f ? 0.0f : value;
+        else if (!_stricmp(key, "nocorpselook")) g_cfg.noCorpseLook = value != 0.0f;
+        else if (!_stricmp(key, "meleereach")) g_cfg.meleeReach = value != 0.0f;
+        else if (!_stricmp(key, "census")) g_cfg.census = value != 0.0f;
+        else if (!_stricmp(key, "lfh")) g_cfg.lfh = value != 0.0f;
+        else if (!_stricmp(key, "orphanblasts")) g_cfg.orphanBlasts = value != 0.0f;
+        else if (!_stricmp(key, "combatjump")) g_cfg.combatJump = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
         else if (!_stricmp(key, "tail")) g_cfg.tail = value != 0.0f;
         else if (!_stricmp(key, "pouncestun")) g_cfg.pounceStun = value != 0.0f;
         else if (!_stricmp(key, "clawspread")) g_cfg.clawSpread = value != 0.0f;
@@ -1198,9 +1258,29 @@ void WalkOnly(Bot& b, CAI* ai, bool on)
     else if (b.walkOnly)
     {
         b.walkOnly = false;
-        if (!ai->GetInjuredMovement())  // a lost leg keeps the engine's own encumbrance
+        if (!ai->GetInjuredMovement() && !b.heavy)  // a lost leg keeps the engine's own encumbrance
             ai->GetMovement()->SetEncumbered(LTFALSE);
     }
+}
+
+// The heavy weapons: a player holding the Smart Gun, the SADAR or the Minigun walks (their *_MP WEAPON has
+// SpeedMod 0, and the client sets the movement encumbered on a weapon change: CWeaponModel, SetEncumbered(fSpeedMod
+// == 0); encumbered drops the run flag and wall walking and jumps at 0.75, CharacterMovement). Bots ran with them
+// (players: "normal running speed with Smartgun and SADAR instead of walking").
+void HeavyUpkeep(Bot& b, CAI* ai)
+{
+    const AIWBM_AIWeapon* aw = ai->GetCurrentWeaponButesPtr();
+    const WEAPON* mp = aw && g_pWeaponMgr ? g_pWeaponMgr->GetWeapon(aw->Name.c_str()) : 0;
+    const bool heavy = g_cfg.heavyWalk && mp && mp->fSpeedMod <= 0.0f;
+    if (heavy == b.heavy)
+        return;
+    b.heavy = heavy;
+    if (heavy)
+        ai->GetMovement()->SetEncumbered(LTTRUE);
+    else if (!b.walkOnly && !ai->GetInjuredMovement())
+        ai->GetMovement()->SetEncumbered(LTFALSE);
+    if (g_cfg.debug)
+        Log("HEAVY %s %s %s", b.name.c_str(), heavy ? "walks with" : "runs again, now", aw ? aw->Name.c_str() : "-");
 }
 
 void StartSift(Bot& b, CAI* ai, const char* why)
@@ -1351,7 +1431,29 @@ void HearUpkeep(Bot& b, CAI* ai)
     const HOBJECT t = ai->HasTarget() ? ai->GetTarget().GetObject().GetHOBJECT() : LTNULL;
     if (t == b.lastTarget)
         return;
+    // A Marine or Predator bot that loses sight of a live enemy keeps watching where it went for a while (the
+    // tracker's watch: BotTrackerGoal, bid 35, faces the spot and stands), as a player stays alert after a fight;
+    // the AI went straight back to roaming (players: "they quickly turn around and go back to their business as if
+    // nothing happened"). A dead target ends it.
+    // (the old target through a smart link: a raw handle of a removed object crashed the engine, found in testing)
+    const HOBJECT oldT = b.lastTargetLink.GetHOBJECT();
+    if (!t && oldT && g_cfg.alertTime > 0.0f && b.species != BOT_ALIEN && b.stage == 0)
+    {
+        CCharacter* old = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(oldT));
+        if (old && !old->IsDead() && g_pCharacterMgr->AreEnemies(*ai, *old))
+        {
+            const LTFLOAT now = g_pLTServer->GetTime();
+            b.trackPos = old->GetPosition();
+            b.trackThreat = oldT;
+            b.trackReactAt = now + 0.2f;
+            b.trackWatchUntil = now + g_cfg.alertTime;
+            if (g_cfg.debug)
+                Log("ALERT %s watches where %s went for %.0f s", b.name.c_str(), ObjectLabel(oldT).c_str(),
+                    g_cfg.alertTime);
+        }
+    }
     b.lastTarget = t;
+    b.lastTargetLink = t;
     if (t && g_cfg.debug)
         Log("TARGETSET %s -> %s heard=%.1f", b.name.c_str(), ObjectLabel(t).c_str(), HeardAgo(b, t, g_pLTServer->GetTime()));
 }
@@ -1550,6 +1652,63 @@ bool ClearLine(const LTVector& a, const LTVector& b)
     return !g_pLTServer->IntersectSegment(&q, &info);
 }
 
+// The client's head-bite rule (CAutoTargetMgr::CheckForLiveAlienTarget): "no head, no head_bite for you!", the
+// model's "Head" piece must be shown. A masked Predator shows "Head_Mask" and hides "Head" (SetupModelPieces), so a
+// player cannot bite him (players: "aliens can headbite Predators who have their masks on").
+bool HeadShown(CCharacter* c)
+{
+    HMODELPIECE hPiece;
+    LTBOOL hidden = LTFALSE;
+    if (g_pModelLT->GetPiece(c->m_hObject, "Head", hPiece) != LT_OK)
+        return false;
+    if (g_pModelLT->GetPieceHideStatus(c->m_hObject, hPiece, hidden) != LT_OK)
+        return false;
+    return !hidden;
+}
+
+// Who gets a dead bot's kill. The game reads its last damager, which is no character when the bot dies in a burning
+// or acid patch, by a fall or from a damager that is gone: that read "<bot> killed himself" and gave the player who
+// had set it on fire nothing (players: "sometimes it says they killed themselves", the bot was theirs). A character
+// that hurt it in the last 10 s gets the kill then; its own grenade or a fall with no attacker stays a suicide.
+const LTFLOAT kCreditWindow = 10.0f;
+
+HOBJECT CreditedKiller(const Bot& b, HOBJECT hKiller)
+{
+    // (the bot's object may be gone already when its death is seen: then both handles are null, which is no suicide;
+    // a real-client test: 7.5 % of a live server's deaths read "killer=world at 0 0 0" and showed as suicides)
+    const HOBJECT self = b.hObj.GetHOBJECT();
+    if ((self && hKiller == self) || (hKiller && dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hKiller))))
+        return hKiller;
+    const HOBJECT foe = b.lastFoe.GetHOBJECT();
+    if (!foe || foe == self || g_pLTServer->GetTime() - b.lastFoeAt > kCreditWindow)
+        return hKiller;
+    Log("CREDIT %s death by %s goes to %s (hit %.1f s before)", b.name.c_str(), ObjectLabel(hKiller).c_str(),
+        ObjectLabel(foe).c_str(), (float)(g_pLTServer->GetTime() - b.lastFoeAt));
+    return foe;
+}
+
+// A netted character lies on the floor in its net (CCharacter::UpdateNet: Net_thrw_* animations) while its box keeps
+// its height, so the AI's aim point (the box's chest, CCharacter::GetChestOffset) passes above the body: a Predator
+// bot's blades and pistol missed a netted player (players: "they attack as if the target was still standing"; the
+// shoulder cannon, aimed at the upper torso node, killed). A netted target is aimed at its upper torso as its model
+// has it now, as a player aims at the body on the floor.
+bool LowBodyPoint(HOBJECT hTarget, LTVector& p)
+{
+    CCharacter* c = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hTarget));
+    if (!c || !c->IsNetted())
+        return false;
+    const ModelSkeleton sk = c->GetModelSkeleton();
+    const ModelNode n = g_pModelButeMgr->GetSkeletonNode(sk, "Torso_u_node");
+    const char* node = n != eModelNodeInvalid ? g_pModelButeMgr->GetSkeletonNodeName(sk, n) : 0;
+    HMODELNODE hNode;
+    LTransform t;
+    if (!node || g_pModelLT->GetNode(c->m_hObject, const_cast<char*>(node), hNode) != LT_OK ||
+        g_pModelLT->GetNodeTransform(c->m_hObject, hNode, t, LTTRUE) != LT_OK)
+        return false;
+    g_pLTServer->GetTransformLT()->GetPos(t, p);
+    return true;
+}
+
 // a character's head as its model has it now (players aim at it), else the AI's head offset
 LTVector HeadPoint(CCharacter* c)
 {
@@ -1728,7 +1887,7 @@ void AlienKitUpdate(Bot& b, CAI* ai, LTFLOAT now)
     if (g_cfg.headbite && b.kitBite && now >= b.biteRollAt)
     {
         const CharacterButes* tb = tc->GetButes();
-        if (!tb || tb->m_eCharacterClass == ALIEN || tb->m_eCharacterClass == SYNTHETIC)
+        if (!tb || tb->m_eCharacterClass == ALIEN || tb->m_eCharacterClass == SYNTHETIC || !HeadShown(tc))
             return;
         const LTVector head = HeadPoint(tc);
         const LTVector to = head - ai->GetPosition();
@@ -1751,6 +1910,80 @@ void AlienKitUpdate(Bot& b, CAI* ai, LTFLOAT now)
                     to.Mag(), helpless ? "helpless" : "unseen");
         }
     }
+}
+
+// A netted bot cuts its way out as a player does: a player keeps striking with a blade or claws (CWeapon::Fire
+// calls HandleNetSlash for DT_SLICE, DT_ALIEN_CLAW and "Blades" ammo; out once NetDamage, 100, is dealt), where the
+// AI never fires while netted (CAI::BurstDelayExpired) and lay there for the whole NetTime (12 s). Players: "bots
+// can't leave the nets, real players switch to the knife and cut through; aliens always claw through quickly".
+// The strike goes at the enemy in reach if there is one (a player swings at him too), else ahead.
+const WEAPON* NetCutter(const Bot& b, const BARREL** barrel)
+{
+    const BotClass* cls = b.lifeClass ? b.lifeClass : b.cls;
+    if (!cls || !cls->mpSet)
+        return 0;
+    const int set = g_pCharacterButeMgr->GetSetFromModelType(cls->mpSet);
+    WEAPON_SET* ws = set >= 0 ? g_pWeaponMgr->GetWeaponSet((int)g_pCharacterButeMgr->GetMPClassWeaponSet(set)) : 0;
+    for (int i = 0; ws && i < ws->nNumWeapons; ++i)
+    {
+        WEAPON* w = g_pWeaponMgr->GetWeapon(ws->szWeaponName[i]);
+        const BARREL* bd = w ? g_pWeaponMgr->GetBarrel(w->aBarrelTypes[0]) : 0;
+        const AMMO* ad = bd ? g_pWeaponMgr->GetAmmo(bd->nAmmoType) : 0;
+        if (!ad || ad->nInstDamage <= 0)
+            continue;
+        if (ad->eInstDamageType == DT_SLICE || ad->eInstDamageType == DT_ALIEN_CLAW || !_stricmp(ad->szAmmoPool, "Blades"))
+        {
+            *barrel = bd;
+            return w;
+        }
+    }
+    return 0;
+}
+
+void NetEscapeUpkeep(Bot& b, CAI* ai, LTFLOAT now)
+{
+    if (!ai->IsNetted())
+    {
+        if (b.netSince > 0.0f && g_cfg.debug)
+            Log("NETFREE %s class=%s after %.1f s, %d cuts", b.name.c_str(), ClassName(b), now - b.netSince, b.netCuts);
+        b.netSince = 0.0f;
+        b.netCuts = 0;
+        return;
+    }
+    if (b.netSince <= 0.0f)
+    {
+        // thrown down first (Net_thrw_start, then _end on the floor): the first cut once it lies there
+        b.netSince = now;
+        b.netCutAt = now + GetRandom(1.2f, 1.8f);
+        b.netCuts = 0;
+        if (g_cfg.debug)
+            Log("NETTED %s class=%s", b.name.c_str(), ClassName(b));
+        return;
+    }
+    if (!g_cfg.netEscape || now < b.netCutAt)
+        return;
+    const BARREL* bd = 0;
+    const WEAPON* wd = NetCutter(b, &bd);
+    if (!wd)
+        return;
+    HOBJECT ht = ai->HasTarget() ? ai->GetTarget().GetObject().GetHOBJECT() : LTNULL;
+    LTVector aim = ai->GetPosition() + ai->GetForward() * 64.0f;
+    if (CCharacter* tc = ht ? dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(ht)) : LTNULL)
+    {
+        const LTVector chest = tc->GetPosition() + tc->GetChestOffset();
+        if (!tc->IsDead() && (chest - ai->GetPosition()).Mag() <= (float)bd->nRange)
+            aim = chest;
+        else
+            ht = LTNULL;
+    }
+    else
+        ht = LTNULL;
+    Strike(ai, wd, bd, ht, aim, "NetCut");
+    ++b.netCuts;
+    b.netCutAt = now + GetRandom(0.4f, 0.6f);   // a player's strike rate with blades or claws
+    if (g_cfg.debug)
+        Log("NETCUT %s class=%s weapon=%s cut=%d%s", b.name.c_str(), ClassName(b), wd->szName, b.netCuts,
+            ht ? " (at the enemy)" : "");
 }
 
 // Per update, for a live Predator bot: the cloak's costs, the sift's and the medicomp's keys, and what a player
@@ -1858,6 +2091,7 @@ void EnergyUpkeep(Bot& b, CAI* ai)
 
 bool Spawn(Bot& b)
 {
+    ++g_spawnsTotal;
     RegisterAllWeapons();
     const SpeciesDef& sp = kSpecies[b.species];
     // the players' rule (GameServerShell::FindStartPoint): the species' start point whose nearest player or
@@ -2009,6 +2243,7 @@ bool Spawn(Bot& b)
     b.mediUntil = 0.0f;
     b.mediKeyDone = false;
     b.walkOnly = false;
+    b.heavy = false;
     b.lastShot = 0.0f;
     b.cloakWas = 0;
     b.spears = SpearsAtSpawn();
@@ -2049,6 +2284,12 @@ bool Spawn(Bot& b)
     b.smartTarget = LTNULL;
     b.lockAt = 0.0f;
     b.lockSeen = 0.0f;
+    b.lastFoe = (HOBJECT)LTNULL;
+    b.lastFoeAt = 0.0f;
+    b.netSince = b.netCutAt = 0.0f;
+    b.netCuts = 0;
+    b.sfxId = 0;
+    b.strikeCommitUntil = 0.0f;
     b.rowResend = false;
     b.weaponReadyAt = 0.0f;
     b.handWeapon.clear();   // a new life starts with its weapon in hand
@@ -2066,6 +2307,7 @@ bool Spawn(Bot& b)
     b.glanceAt = 0.0f;
     b.glanceDist = 0.0f;
     b.lastTarget = LTNULL;
+    b.lastTargetLink = (HOBJECT)LTNULL;
     b.hearOnsets = 0;
     b.cbh.Reset();
     b.cls = cls;
@@ -2109,6 +2351,10 @@ bool Spawn(Bot& b)
     else
         b.display = std::string("[B] ") + sp.tag + " " + (char)('0' + (b.slot % 10));
     ScoreRowAdd(b);
+    // the FX message was written during the object's creation, before the bot had its handle and row: rewritten with
+    // the row id in the same frame, before the object goes out to the clients (BotMgr_SfxClientId)
+    if (g_cfg.nameTags && b.rowId)
+        ai->BotCreateSFX();
     Log("SPAWN %s species=%s class=%s char=%s hp=%.0f armor=%.0f weapons=%s at %.0f %.0f %.0f", name, sp.tag,
         cls ? cls->name : "-", character, ai->GetDestructible()->GetHitPoints(), ai->GetDestructible()->GetArmorPoints(),
         weapons.empty() ? "template" : weapons.c_str(), pos.x, pos.y, pos.z);
@@ -2251,6 +2497,41 @@ std::string ObjectLabel(HOBJECT h)
     if (buf[0])
         return buf;
     return "unnamed";
+}
+
+// Diagnostics (bots.cfg census): every object of the world, active or not, counted per class, the 14 commonest and
+// the total, with the bot spawns since the server started: an object left behind at each spawn or death shows as a
+// count that keeps rising (the live servers' memory grows ~5 KB per bot spawn).
+void ObjectCensus()
+{
+    std::map<std::string, int> count;
+    int total = 0;
+    char name[64];
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        HOBJECT h = LTNULL;
+        while ((h = pass == 0 ? g_pLTServer->GetNextObject(h) : g_pLTServer->GetNextInactiveObject(h)) != LTNULL)
+        {
+            ++total;
+            HCLASS hc = g_pLTServer->GetObjectClass(h);
+            name[0] = 0;
+            if (!hc || g_pLTServer->GetClassName(hc, name, sizeof(name)) != LT_OK || !name[0])
+                strcpy(name, "?");
+            ++count[name];
+        }
+    }
+    std::vector<std::pair<int, std::string> > top;
+    for (std::map<std::string, int>::const_iterator it = count.begin(); it != count.end(); ++it)
+        top.push_back(std::make_pair(it->second, it->first));
+    std::sort(top.rbegin(), top.rend());
+    std::string s;
+    char buf[96];
+    for (size_t i = 0; i < top.size() && i < 14; ++i)
+    {
+        sprintf(buf, " %s=%d", top[i].second.c_str(), top[i].first);
+        s += buf;
+    }
+    Log("CENSUS objects=%d classes=%d spawns=%ld:%s", total, (int)count.size(), g_spawnsTotal, s.c_str());
 }
 
 void LogStatus(Bot& b, LTFLOAT now)
@@ -2618,6 +2899,7 @@ void AddBot(BotSpecies sp, const BotClass* forced, LTFLOAT when)
     b.mediUntil = 0.0f;
     b.mediKeyDone = false;
     b.walkOnly = false;
+    b.heavy = false;
     b.lastShot = 0.0f;
     b.cloakWas = 0;
     b.spears = 0;
@@ -2656,6 +2938,12 @@ void AddBot(BotSpecies sp, const BotClass* forced, LTFLOAT when)
     b.smartTarget = LTNULL;
     b.lockAt = 0.0f;
     b.lockSeen = 0.0f;
+    b.lastFoe = (HOBJECT)LTNULL;
+    b.lastFoeAt = 0.0f;
+    b.netSince = b.netCutAt = 0.0f;
+    b.netCuts = 0;
+    b.sfxId = 0;
+    b.strikeCommitUntil = 0.0f;
     b.rowResend = false;
     b.weaponReadyAt = 0.0f;
     b.handWeapon.clear();   // a new life starts with its weapon in hand
@@ -2665,6 +2953,7 @@ void AddBot(BotSpecies sp, const BotClass* forced, LTFLOAT when)
     b.trackScanAt = b.trackReactAt = b.trackWatchUntil = 0.0f;
     b.trackLast = LTNULL;
     b.lastTarget = LTNULL;
+    b.lastTargetLink = (HOBJECT)LTNULL;
     b.hearOnsets = 0;
     ResetKit(b);
     g_bots.push_back(b);
@@ -2730,6 +3019,72 @@ bool BotMgr_EndPause()
     if (!g_cfg.endPause || !mp)
         return false;
     return mp->GetServerState() != MPMGR_STATE_PLAYING || mp->GetServerSubState() == MPMGR_SUBSTATE_TM_ROUND;
+}
+
+// The client keys a character's team and name on the client id of its FX (players: theirs; AI: 0). With 0 a Marine
+// bot counted as an Alien for a Marine player's Smart Gun (it locked on his teammates: SFXObjectFilterFn compares
+// the classes of the two client ids) and no bot showed a name under the crosshair. A bot's FX carries its scoreboard
+// row id (the clients have the row: MID_MPMGR_ADD_CLIENT, name and class); a bot with no row keeps 0.
+// A Predator bot's melee (combistick 200 units, wristblades 150, from its centre): it strikes once the target will
+// still be in reach when the blow lands (its distance plus how far it backs away during the swing's wind-up, with a
+// margin), runs at it otherwise, and finishes a swing it began. The AI struck only within 100 units and broke off a
+// swing as soon as the target stepped beyond, so a target backing away was never hit.
+const float kMeleeWindup = 0.5f;    // seconds from the start of the swing to the blow (measured: STRIKEGO -> SHOT, median 0.50 s)
+const float kMeleeMargin = 0.85f;   // part of the reach counted on
+
+int BotMgr_MeleeReach(CAI* pAI, float fTargetRangeSqr)
+{
+    if (!g_cfg.meleeReach || !pAI || g_bots.empty())
+        return 0;
+    Bot* b = FindBot(pAI->m_hObject);
+    if (!b || b->species != BOT_PREDATOR)
+        return 0;
+    const LTFLOAT now = g_pLTServer->GetTime();
+    if (now < b->strikeCommitUntil)
+        return -1;
+    const CWeapon* w = pAI->GetCurrentWeaponPtr();
+    const BARREL* bd = w ? w->GetBarrelData() : 0;
+    if (!bd || !pAI->HasTarget())
+        return 0;
+    const HOBJECT ht = pAI->GetTarget().GetObject().GetHOBJECT();
+    LTVector tp, tv;
+    g_pLTServer->GetObjectPos(ht, &tp);
+    g_pLTServer->GetVelocity(ht, &tv);
+    LTVector to = tp - pAI->GetPosition();
+    to.y = 0.0f;
+    const float dist = sqrtf(fTargetRangeSqr);
+    float away = 0.0f;
+    if (to.Mag() > 1.0f)
+    {
+        to.Norm();
+        away = tv.x * to.x + tv.z * to.z;
+    }
+    const float predicted = dist + (away > 0.0f ? away : 0.0f) * kMeleeWindup;
+    if (predicted > kMeleeMargin * (float)bd->nRange)
+        return 1;
+    b->strikeCommitUntil = now + kMeleeWindup + 0.1f;
+    if (g_cfg.debug)
+        Log("STRIKEGO %s dist=%.0f away=%.0f reach=%d", b->name.c_str(), dist, away, bd->nRange);
+    return -1;
+}
+
+bool BotMgr_OrphanBlasts()
+{
+    return g_cfg.orphanBlasts && g_pGameServerShell && g_pGameServerShell->GetGameType().IsMultiplayer();
+}
+
+bool BotMgr_StunFire(HOBJECT hObj)
+{
+    return g_cfg.stunFire && FindBot(hObj) != 0;
+}
+
+uint32 BotMgr_SfxClientId(HOBJECT hObj)
+{
+    Bot* b = g_cfg.nameTags ? FindBot(hObj) : 0;
+    if (!b)
+        return 0;
+    b->sfxId = b->rowId;
+    return b->rowId;
 }
 
 // ----------------------------------------------------------------------------------------------
@@ -3311,8 +3666,10 @@ struct BotScoreAccess
         for (uint32 cand = 200; cand < 256 && !id; ++cand)
         {
             bool used = mp->FindClient(cand) != -1;
+            // nor the id a live bot's FX still carries after its row went (the clients would put this row's name
+            // and team on it)
             for (size_t i = 0; i < g_bots.size() && !used; ++i)
-                used = g_bots[i].rowId == cand;
+                used = g_bots[i].rowId == cand || (g_bots[i].sfxId == cand && g_bots[i].alive && &g_bots[i] != &b);
             if (!used)
                 id = cand;
         }
@@ -3365,7 +3722,8 @@ struct BotScoreAccess
 
     static void KillMessage(uint8 type, uint32 killer, uint32 victim)
     {
-        if (!g_cfg.scoreboard || !killer)
+        // a victim with no row (id 0) printed a blank name on the clients (a bot killed by a bot while it had none)
+        if (!g_cfg.scoreboard || !killer || (type != MP_SERV_MSG_KILLED_HIMSELF && !victim))
             return;
         HMESSAGEWRITE hWrite = g_pLTServer->StartMessage(LTNULL, MID_MPMGR_SERVER_MESSAGE);
         hWrite->WriteByte(type);
@@ -4816,6 +5174,19 @@ HOBJECT BotMgr_FireCommit(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vFi
     CAI* ai = BotAI(*bot);
     const AIWBM_AIWeapon* w = ai ? ai->GetCurrentWeaponButesPtr() : 0;
     SpendShot(hShooter, ai, w, bot);
+    // a melee strike on a netted target goes to the body on the floor (LowBodyPoint; guns: BotMgr_AimError)
+    LTVector low;
+    if (w && w->bMeleeWeapon && hTarget && LowBodyPoint(hTarget, low))
+    {
+        LTVector to = low - vFirePos;
+        if (to.MagSqr() > 1.0f)
+        {
+            to.Norm();
+            vPath = to;
+            if (g_cfg.debug)
+                Log("NETSTRIKE %s %s -> %s", bot->name.c_str(), w->Name.c_str(), ObjectLabel(hTarget).c_str());
+        }
+    }
     if (bot->species == BOT_MARINE && w && IsWeapon(w, kPRGrenade))
     {
         const LTFLOAT t = g_pLTServer->GetTime();
@@ -5732,6 +6103,36 @@ void BotMgr_PreStartWorld()
     g_navLoaded = false;
 }
 
+// The live servers (Wine on Linux) grow ~5 KB of committed heap per bot spawn, about 2-6 MB/h, until systemd kills
+// them after 7-9 days; the same build under Windows barely grows (local churn soak, 9000 spawns/h). Each spawn and
+// death allocates and frees many small blocks (an AI object, its goals, actions, senses, strings): a heap without
+// a low-fragmentation front end keeps adding segments. Windows turns the LFH on by itself; Wine may need it asked
+// for (HeapSetInformation, HeapCompatibilityInformation = 2). Every heap of the process is asked once: the C runtime
+// of this module uses the process heap, the 2002 engine and server.dll their own.
+void EnableLowFragmentationHeaps()
+{
+    static bool done = false;
+    if (done || !g_cfg.lfh)
+        return;
+    done = true;
+    HANDLE heaps[64];
+    const DWORD n = GetProcessHeaps(64, heaps);
+    int ok = 0, already = 0;
+    for (DWORD i = 0; i < n && i < 64; ++i)
+    {
+        ULONG mode = 0;
+        if (HeapQueryInformation(heaps[i], HeapCompatibilityInformation, &mode, sizeof(mode), LTNULL) && mode == 2)
+        {
+            ++already;
+            continue;
+        }
+        mode = 2;
+        if (HeapSetInformation(heaps[i], HeapCompatibilityInformation, &mode, sizeof(mode)))
+            ++ok;
+    }
+    Log("HEAP %lu heaps: low-fragmentation heap already on %d, turned on %d", (unsigned long)n, already, ok);
+}
+
 void BotMgr_PostStartWorld()
 {
     g_bots.clear();
@@ -5739,11 +6140,12 @@ void BotMgr_PostStartWorld()
     // until the new map outlived the old one (doors, relations, score rows, command.txt, Survivor points and the
     // STATUS lines all stopped a few maps into a server's life; found on a live server).
     g_nextStatus = g_nextRelations = g_nextCommandPoll = g_nextTeamLog = g_nextFill = 0.0f;
-    g_nextDoors = g_nextRows = g_nextSurvTick = 0.0f;  // (g_nextHeat: BuildAmbushData)
+    g_nextDoors = g_nextRows = g_nextSurvTick = g_nextCensus = 0.0f;  // (g_nextHeat: BuildAmbushData)
     LoadConfig();
     if (g_cfg.log && !g_log)
         g_log = fopen("avp2bots_bots.log", "a");
     Msp_LoadKey(); // the MSP 2.4 scrambling constant, from lithserver.rez (once; logs MSPKEY)
+    EnableLowFragmentationHeaps(); // once per process (bots.cfg lfh)
 
     g_map = CurrentMapName();
     if (!GameTypeAllowed())
@@ -5836,7 +6238,9 @@ void BotMgr_Update()
             CAI* ai = BotAI(b);
             if (!ai || ai->IsDead())
             {
-                HOBJECT killer = ai ? ai->GetDestructible()->GetLastDamager() : LTNULL;
+                // the game's last damager, or the last character that hit it (CreditedKiller): also when the AI
+                // object is gone already (removed in its own update before this one: no damager to read)
+                HOBJECT killer = CreditedKiller(b, ai ? ai->GetDestructible()->GetLastDamager() : LTNULL);
                 b.alive = false;
                 b.deaths++;
                 b.respawnTime = now + g_cfg.respawnDelay;
@@ -5958,6 +6362,7 @@ void BotMgr_Update()
             AmmoUpkeep(b, ai);
             AltFireUpkeep(b, ai);
             SadarLockUpkeep(b, ai);
+            HeavyUpkeep(b, ai);
             DiscUpkeep(b, ai);
             PredWeaponUpkeep(b, ai);
             AnimWatchdog(b, ai);
@@ -5968,6 +6373,7 @@ void BotMgr_Update()
                 FeedFinish(b, ai, "gone");
             else if (b.feeding && _stricmp(ai->GetCurrentSlotName().c_str(), "BotRoam"))
                 FeedFinish(b, ai, "goal");
+            NetEscapeUpkeep(b, ai, now);
             AlienKitUpdate(b, ai, now);
             HugHunt(b, ai, now);
             {
@@ -5987,7 +6393,23 @@ void BotMgr_Update()
                         b.pounceTouched.empty() ? "nothing" : b.pounceTouched.c_str(), ht ? (tp - ai->GetPosition()).Mag() : -1.0f);
                 }
                 if (pouncing && !b.pouncing)
+                {
                     b.pounceTouched.clear();
+                    // the cry every other client plays from a pouncing player (CP_POUNCE_SOUND -> CFX_POUNCE_SOUND,
+                    // CPlayerObj::HandleClientMsg; the AI's own cry is one of the lines 'botquiet' silences)
+                    // (players: "the aliens don't make a sound when they pounce")
+                    if (g_cfg.pounceCry)
+                    {
+                        const char* cn = ai->GetMovement()->GetCharacterButes()->m_szName;
+                        const uint8 type = strstr(cn, "Facehugger") ? 2 : (strstr(cn, "Predalien") ? 3 : 1);
+                        HMESSAGEWRITE hMsg = g_pLTServer->StartMessage(LTNULL, MID_SFX_MESSAGE);
+                        g_pLTServer->WriteToMessageByte(hMsg, SFX_CHARACTER_ID);
+                        g_pLTServer->WriteToMessageObject(hMsg, ai->m_hObject);
+                        g_pLTServer->WriteToMessageByte(hMsg, CFX_POUNCE_SOUND);
+                        g_pLTServer->WriteToMessageByte(hMsg, type);
+                        g_pLTServer->EndMessage2(hMsg, MESSAGE_NAGGLE);
+                    }
+                }
                 if (pouncing && !b.pouncing && g_cfg.debug)
                 {
                     const LTVector dv = ai->GetMovement()->GetCharacterVars()->m_vDestination - ai->GetPosition();
@@ -6096,12 +6518,24 @@ void BotMgr_Update()
                     SendCommand(ai->m_hObject, "AG Investigate");
                     SendCommand(ai->m_hObject, "AG BotRoam");
                 }
-                if (g_cfg.tracker && b.species == BOT_MARINE)
-                    SendCommand(ai->m_hObject, "AG BotTracker");   // the motion tracker's reaction (BotTrackerGoal)
+                // the motion tracker's reaction (BotTrackerGoal); a Predator's watch after a lost target (alert)
+                if ((g_cfg.tracker && b.species == BOT_MARINE) || (g_cfg.alertTime > 0.0f && b.species == BOT_PREDATOR))
+                    SendCommand(ai->m_hObject, "AG BotTracker");
                 // players run (the default); the AI's Investigate goal walked toward what it heard. With the
                 // run lock CAI::Walk() does nothing (AI.h), so the bot always runs.
                 if (g_cfg.alwaysRun)
                     SendCommand(ai->m_hObject, "RUNLOCK on");
+                // the single-player AI's interest in bodies, blood and death cries: in a deathmatch there are bodies
+                // everywhere, and a bot that had just killed someone turned to look at the body and walked over
+                // to it ("Investigate", GLANCE toward <victim>_dead): players: "aliens sometimes become idle for a
+                // few seconds after killing me". An alien's meals are BotMgr's own search (BotMgr_FeedWanted).
+                if (g_cfg.noCorpseLook)
+                {
+                    const int quiet[] = {CAISenseMgr::SeeDeadBody, CAISenseMgr::SeeBlood, CAISenseMgr::HearDeath};
+                    for (int q = 0; q < 3; ++q)
+                        if (CAISense* s = ai->GetSenseMgr().GetSensePtr((CAISenseMgr::Sense)quiet[q]))
+                            s->Enable(LTFALSE);
+                }
                 b.goalsSent = true;
             }
             g_pLTServer->SetObjectState(ai->m_hObject, OBJSTATE_ACTIVE);
@@ -6167,6 +6601,11 @@ void BotMgr_Update()
             BotScoreAccess::LogTeams();
             if (g_playerHits[0] || g_playerHits[1])
                 Log("PLAYERHITS players' hits on bots so far: %d applied, %d refused", g_playerHits[0], g_playerHits[1]);
+            if (g_cfg.census && now >= g_nextCensus)
+            {
+                ObjectCensus();
+                g_nextCensus = now + 60.0f;
+            }
             if (g_cfg.debug)
             {
                 LogAmbushStats();
@@ -6351,6 +6790,12 @@ static int CloakZone(HOBJECT hAI, HOBJECT hTarget, float d2)
                : 0;
 }
 
+// on fire: the flames every client draws (Destructible sets USRFLG_CHAR_NAPALM while napalm burns)
+static bool Burning(HOBJECT h)
+{
+    return h && (g_pLTServer->GetObjectUserFlags(h) & USRFLG_CHAR_NAPALM) != 0;
+}
+
 LTFLOAT BotMgr_CloakSeeFactor(HOBJECT hAI, HOBJECT hStimulus, LTFLOAT fDistanceSqr)
 {
     // The single-player AI sees a cloaked Predator only within 250 units and at 15 % of its sight rate
@@ -6365,6 +6810,9 @@ LTFLOAT BotMgr_CloakSeeFactor(HOBJECT hAI, HOBJECT hStimulus, LTFLOAT fDistanceS
     CCharacter* tc = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hStimulus));
     if (!ai || !tc || tc->GetCloakState() == CLOAK_STATE_INACTIVE)
         return -1.0f;
+    // a burning Predator is a torch, cloak or not (every client draws its flames, USRFLG_CHAR_NAPALM)
+    if (Burning(hStimulus))
+        return 1.0f;
     if (ai->GetCharacterClass() == PREDATOR)
         return -1.0f;
     LTFLOAT r, g, b, a = 1.0f;
@@ -6393,6 +6841,10 @@ LTFLOAT BotMgr_SizeSeeFactor(HOBJECT hAI, HOBJECT hStimulus)
     if (!hAI || !hStimulus || !BotMgr_IsBot(hAI))
         return 1.0f;
     const float skillF = BotSkillSeeFactor(hAI); // a server extension's per-bot skill
+    // a burning character draws every eye (players: "an enemy on fire becomes a bullet magnet, seen across the
+    // map"): noticed twice as fast, whatever its size
+    if (g_cfg.seeBurning && Burning(hStimulus))
+        return skillF * 2.0f;
     if (!g_cfg.smallSight)
         return skillF;
     CCharacter* tc = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hStimulus));
@@ -6428,6 +6880,8 @@ bool BotMgr_CanShootCloaked(HOBJECT hAI, HOBJECT hTarget)
     // on a cloaked target (BotMgr_AimError).
     if (!hAI || !hTarget || !BotMgr_IsBot(hAI))
         return false;
+    if (Burning(hTarget))
+        return true;   // its flames show where it is
     LTVector a, b;
     g_pLTServer->GetObjectPos(hAI, &a);
     g_pLTServer->GetObjectPos(hTarget, &b);
@@ -6567,6 +7021,14 @@ static void SpendShot(HOBJECT hShooter, CAI* ai, const AIWBM_AIWeapon* w, Bot* b
 
 void BotMgr_OnDamage(HOBJECT hVictim, HOBJECT hDamager, LTFLOAT fDamage, int nType)
 {
+    // the bot's last attacker, for the kill credit (CreditedKiller)
+    if (fDamage > 0.0f && hDamager && hDamager != hVictim && !g_bots.empty() &&
+        dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hDamager)))
+        if (Bot* vb = FindBot(hVictim))
+        {
+            vb->lastFoe = hDamager;
+            vb->lastFoeAt = g_pLTServer->GetTime();
+        }
     // always: a bot hurting itself (its own explosion, a fall), with where it stood, to find the causes in prod logs
     if (fDamage > 0.0f && hVictim && hVictim == hDamager && nType != DT_NAPALM && !g_bots.empty())
     {
@@ -6674,7 +7136,11 @@ bool BotMgr_AimError(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vFirePos
     // (thousandths) before normalizing: on such a path the spread vanished (every shotgun pellet hit the same
     // point at any range). A player's path is a unit vector; so is a bot's.
     LTVector path = vPath;
-    if (bFullyAimed && ai && ai->HasTarget())
+    LTVector low;
+    const bool netted = bFullyAimed && ai && hTarget && LowBodyPoint(hTarget, low);
+    if (netted)
+        path = low - vFirePos;   // the body on the floor (LowBodyPoint), not the box's chest
+    else if (bFullyAimed && ai && ai->HasTarget())
     {
         const LTVector& lag = ai->GetTarget().GetLag();
         if (path.MagSqr() > lag.MagSqr())
@@ -6733,9 +7199,12 @@ bool BotMgr_AimError(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vFirePos
     {
         // the lock follows the target: aim at where it is now (the AI's aim point is a few frames old,
         // 50 units behind a running Alien), at the chest
-        LTVector tp;
-        g_pLTServer->GetObjectPos(hTarget, &tp);
-        tp += ai->GetTarget().GetTargetOffset();
+        LTVector tp = low;
+        if (!netted)
+        {
+            g_pLTServer->GetObjectPos(hTarget, &tp);
+            tp += ai->GetTarget().GetTargetOffset();
+        }
         LTVector to = tp - vFirePos;
         if (to.MagSqr() > 1.0f)
         {
@@ -6873,7 +7342,7 @@ LTFLOAT BotMgr_TrackerBid(CAI* pAI, LTVector* pBlip)
     // above AttackOther (30: a target only heard, or waiting for a new one), below Investigate (40) and an
     // enemy in sight (AttackSeeEnemy 60)
     const LTFLOAT kBid = 35.0f;
-    if (!g_cfg.tracker || !pAI || g_bots.empty())
+    if ((!g_cfg.tracker && g_cfg.alertTime <= 0.0f) || !pAI || g_bots.empty())
         return 0.0f;
     Bot* b = FindBot(pAI->m_hObject);
     const LTFLOAT now = g_pLTServer->GetTime();
@@ -7056,6 +7525,7 @@ const float kLegNodeY = 40.0f;     // ... at about the same height
 const float kLegStepUp = 36.0f;
 const float kLegStepDown = 36.0f;
 const float kTanTilt = 0.577f;     // tan 30 degrees: a leg's tilt toward/away from the target; the zig-zag angle
+const float kBackFrom = 600.0f;    // a Marine bot backs away from an alien or a blade closer than this (my choice)
 const float kZigMin = 300.0f;      // aliens zig-zag between these distances to their target
 const float kZigMax = 2000.0f;
 // wall approach (bots.cfg 'wallapproach'): between the pounce's maximum range (AlienPounceRange 750, AIButes) and
@@ -7208,9 +7678,19 @@ bool SelectLeg(Bot& b, CAI* ai, LTFLOAT now, const LTVector& tpos, const LTVecto
     float tilt = 0.0f;
     if (const AIWBM_AIWeapon* w = ai->GetCurrentWeaponButesPtr())
     {
-        if (dist > 0.5f * (w->fMinIdealRange + w->fMaxIdealRange))
+        const bool backs = b.species == BOT_PREDATOR || (b.species == BOT_MARINE && g_cfg.backpedal);
+        // a Marine player backs away from what would close in on him (an alien, a Predator with blades) while he
+        // shoots, to keep it in his sights longer (players: "real players also move backwards to create more
+        // space"): legs lean 45 degrees away from such a target within kBackFrom
+        const CCharacter* tc = ai->GetTarget().GetCharacterPtr();
+        const CAI* tai = dynamic_cast<const CAI*>(tc);
+        const AIWBM_AIWeapon* tw = tai ? tai->GetCurrentWeaponButesPtr() : 0;
+        const bool closer = tc && (VisionClass(tc) == 2 || (tw && tw->bMeleeWeapon));
+        if (dist > 0.5f * (w->fMinIdealRange + w->fMaxIdealRange) && !(b.species == BOT_MARINE && closer && dist < kBackFrom))
             tilt = kTanTilt;
-        else if (b.species == BOT_PREDATOR && dist < w->fMinIdealRange)
+        else if (backs && b.species == BOT_MARINE && closer && dist < kBackFrom)
+            tilt = -1.0f;
+        else if (backs && dist < w->fMinIdealRange)
             tilt = -kTanTilt;
     }
     const CharacterMovement* cmv = ai->GetMovement();
@@ -7286,6 +7766,27 @@ bool DriveCombatMove(Bot& b, CAI* ai, LTFLOAT now, float dt, const AIAction* act
         return false;
     CharacterMovement* cmv = ai->GetMovement();
     const CharacterMovementState cms = cmv->GetMovementState();
+    // a combat jump in the air: the AI's own jump animations (its action layers Jump, Fall, Land), the run's
+    // momentum carries it along the leg; the leg resumes once it is down
+    if (c.jumped)
+    {
+        const char* layer = 0;
+        switch (cms)
+        {
+            case CMS_PRE_JUMPING: case CMS_STAND_JUMP: case CMS_WALK_JUMP: case CMS_RUN_JUMP: layer = "Jump"; break;
+            case CMS_PRE_FALLING: case CMS_STAND_FALL: case CMS_WALK_FALL: case CMS_RUN_FALL: layer = "Fall"; break;
+            case CMS_STAND_LAND: case CMS_WALK_LAND: case CMS_RUN_LAND: layer = "Land"; break;
+            default: c.jumped = false; break;
+        }
+        if (layer)
+        {
+            ai->GetAnimation()->SetLayerReference(ANIMSTYLELAYER_ACTION, layer);
+            c.moving = true;
+            if (c.hasLeg)
+                c.legUntil += dt;   // the air time does not count against the leg
+            return true;
+        }
+    }
     if (cms != CMS_IDLE && cms != CMS_WALKING && cms != CMS_RUNNING)
         return false;
     if ((cmv->GetControlFlags() & (CM_FLAG_WALLWALK | CM_FLAG_DUCK)) || ai->IsNetted() || ai->IsStunned())
@@ -7301,7 +7802,9 @@ bool DriveCombatMove(Bot& b, CAI* ai, LTFLOAT now, float dt, const AIAction* act
     // face the target, as a player faces what he shoots at (clients get the aim pitch, not its yaw)
     ai->SnapTurn(face);
 
-    const bool canBack = b.species == BOT_PREDATOR;  // Marines never move backward (no RunB in their AI animations)
+    // Marines move backward with their "Backoff" action, which plays the run-backward animation of their weapon
+    // (RB_RF1, RB_SMG...: BasicTracker_MST_*_BO, movement allowed); their AI set has no "RunB" reference
+    const bool canBack = b.species == BOT_PREDATOR || (b.species == BOT_MARINE && g_cfg.backpedal);
     if (c.hasLeg)
     {
         // what is left of the leg along the directions the bot may move in: as the bot turns with its target,
@@ -7331,6 +7834,7 @@ bool DriveCombatMove(Bot& b, CAI* ai, LTFLOAT now, float dt, const AIAction* act
                 return false;
         }
     }
+    const bool newLeg = !c.hasLeg;
     if (!c.hasLeg && !SelectLeg(b, ai, now, tpos, tpos + t.GetTargetOffset()))
     {
         c.noLeg++;
@@ -7346,7 +7850,10 @@ bool DriveCombatMove(Bot& b, CAI* ai, LTFLOAT now, float dt, const AIAction* act
     const bool run = (ai->GetMovementFlags() & CM_FLAG_RUN) != 0;
     // the players' rule: back pressed = RunB, otherwise RunF (strafing included)
     CharacterAnimation* an = ai->GetAnimation();
-    an->SetLayerReference(ANIMSTYLELAYER_ACTION, back ? (run ? "RunB" : "WalkB") : (run ? "RunF" : "WalkF"));
+    if (back && b.species == BOT_MARINE)
+        an->SetLayerReference(ANIMSTYLELAYER_ACTION, "Backoff");
+    else
+        an->SetLayerReference(ANIMSTYLELAYER_ACTION, back ? (run ? "RunB" : "WalkB") : (run ? "RunF" : "WalkF"));
     c.moving = true;
     if (!an->MovementAllowed())
     {
@@ -7356,6 +7863,18 @@ bool DriveCombatMove(Bot& b, CAI* ai, LTFLOAT now, float dt, const AIAction* act
         c.progTime = now;
         c.legUntil += dt;
         return true;
+    }
+    // now and then a jump at the start of a leg, as players add jumps to their strafing (players: "sometimes they
+    // also add jumps to their movement"): on a leg long enough for the landing (CheckLeg checked its floor), not at
+    // close quarters; the strafe flags below give it its direction
+    if (newLeg && g_cfg.combatJump > 0.0f && rel.Mag() >= 160.0f && face.Mag() >= 300.0f &&
+        GetRandom(0.0f, 1.0f) < g_cfg.combatJump)
+    {
+        ai->Jump();
+        c.jumped = true;
+        ++c.jumps;
+        if (g_cfg.debug)
+            Log("CJUMP %s leg=%.0f dist=%.0f", b.name.c_str(), rel.Mag(), face.Mag());
     }
     if (rr > 2.0f)
         ai->StrafeRight(c.legDest);
@@ -9070,6 +9589,26 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
         Log("PATH ai=%s from=%d to=%d steps=%u ladders=%d climbs=%d crawls=%d%s%s expanded=%d", ObjectLabel(pAI->m_hObject).c_str(),
             a, b, (unsigned)simple.size(), ladders, climbs, crawls, pBias ? " wallapproach" : "", ambush ? " ambush" : "",
             g_nav.LastExpanded());
+    if (g_cfg.debug)
+    {
+        // the first steps (M MoveTo, W WallWalkTo, J JumpTo, w WWJumpTo, L LadderTo) and the waypoints' link kinds
+        std::string sl, kl;
+        char buf[64];
+        for (size_t i = 0; i < simple.size() && i < 40; ++i)
+        {
+            const CAIPathWaypoint::Instruction in = simple[i].instruction;
+            const char c = in == CAIPathWaypoint::eInstructionWallWalkTo ? 'W' : in == CAIPathWaypoint::eInstructionJumpTo ? 'J'
+                         : in == CAIPathWaypoint::eInstructionWWJumpTo ? 'w' : in == CAIPathWaypoint::eInstructionLadderTo ? 'L' : 'M';
+            sprintf(buf, " %c%.0f,%.0f,%.0f", c, simple[i].pos.x, simple[i].pos.y, simple[i].pos.z);
+            sl += buf;
+        }
+        for (size_t i = 0; i < kinds.size() && i < 24; ++i)
+        {
+            sprintf(buf, " %d>%d", (int)kinds[i], i < pathNodes.size() ? pathNodes[i] : -1);
+            kl += buf;
+        }
+        Log("PATHSTEPS ai=%s dims=%.0f,%.0f%s | links%s", ObjectLabel(pAI->m_hObject).c_str(), dims.x, dims.y, sl.c_str(), kl.c_str());
+    }
     g_pathFails.erase(pAI->m_hObject);  // a path found: not isolated
     return LTTRUE;
 }

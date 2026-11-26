@@ -97,8 +97,22 @@ One `key = value` per line; `#` starts a comment.
 | `cloaknear`, `cloakfar`, `cloakspeed` | 300, 800, 250 | How bots see a cloaked Predator (`seecloak`): within `cloaknear` units always, within `cloakfar` when it moves faster than `cloakspeed` units/s, has just fired or has just hit them. |
 | `evacguards` | 0 | Evac: the share of attacker bots that hold the evacuation zone itself instead of hunting. Measured at 0.4: defenders won more often (69 % of rounds instead of 52 %), the split hunters lose; kept for servers that want campers. |
 | `evacgroup` | 0 | Evac: defender bots regroup before heading to the zone. Measured: no gain. |
+| `nametags` | 1 | A bot carries its scoreboard row id as a player carries his client id: its name shows under the crosshair like a player's, and a Marine player's Smart Gun no longer locks on Marine bots (the client takes a character's team from that id). Needs `scoreboard`; a bot without a row (16-row limit) has neither. |
+| `netescape` | 1 | A netted bot cuts its way out with its blades, claws or knife, as players do (the net breaks after 100 damage: aliens in 2-4 strikes, a Predator's wristblades in 2, a Marine's knife in about 20). `0` = it lies there for the whole net time (12 s). |
+| `heavywalk` | 1 | A bot holding the Smart Gun, the SADAR or the Minigun walks, as a player must with them (no running, no wall walking, lower jumps). |
+| `stunfire` | 1 | A stunned bot cannot move but still turns and fires, as a stunned player. `0` = the single-player AI's stun (it does nothing until it ends). |
+| `pouncecry` | 1 | An alien bot's pounce plays the pounce cry the players hear from a pouncing player. |
+| `backpedal` | 1 | Marine bots back away while they shoot at an alien or a blade-wielding Predator closer than 600 units, as players make room. |
+| `seeburning` | 1 | A burning enemy is noticed twice as fast, and a burning Predator is seen through its cloak (its flames give it away). |
+| `alert` | 5 | Seconds a Marine or Predator bot keeps watching where a live enemy left its sight before it goes back to roaming. `0` = off. |
+| `nocorpselook` | 1 | Bots ignore bodies, blood and death cries (the single-player AI turned to look at the body of the one it had just killed and walked over to it). |
+| `orphanblasts` | 1 | The rocket, grenade or plasma bolt of a bot killed before it landed still explodes. In the stock code the blast of a shooter who no longer exists never went off (and its object stayed until the end of the level); a player's object outlives his death, a bot's does not. |
+| `lfh` | 1 | At start, the server asks every heap of its process for the low-fragmentation heap (Windows mostly has it already; meant for Wine hosts, where the server's memory grew with every bot spawn). |
+| `census` | 0 | Diagnostics: every 60 s, the log counts the level's objects per class (CENSUS lines). |
+| `meleereach` | 1 | A Predator bot strikes with its blades or combistick by the weapon's reach and the target's speed, and finishes a swing it began (the AI broke off each swing as soon as the target stepped back). |
 | `listbots` | 0 | Count the bots as players in the server list (the master server and the in-game browser), named `[B] <class> <n>`. One slot always shows free while there is room for a person, so the server never looks full to someone who wants to join; when people alone fill it, the real count is shown. Consider saying "bots" in your server name. |
-| `scoreboard` | 0 | Experimental, not yet tested with a real client: bots get a row on the players' scoreboard (`[B] <class> <n>`) with their frags and score, and "X killed Y" messages. Players + bot rows stay under 16. |
+| `scoreboard` | 0 | Bots get a row on the players' scoreboard (`[B] <class> <n>`) with their frags and score, and "X killed Y" messages; with `nametags`, their name under the crosshair and their team for the Smart Gun. Players + bot rows stay under 16. On our live servers since 2026-11-12. |
+| `combatjump` | 0 | Experimental, not yet measured: the chance that a Marine or Predator bot jumps at the start of a strafe leg. |
 | `score` | 1 | Kills by and of bots count: a player who kills a bot gets the frag and the bot's class score; a player killed by a bot is not counted as a suicide; in Team Deathmatch bot kills count for their team. `0` = bots never change scores. |
 | `log` | 1 | Write `avp2bots_bots.log` (spawns, deaths, status, stuck reports). About 70 MB a day with 12 bots. |
 | `logmax` | 20 | Size in MB at which the log is renamed `avp2bots_bots.log.1` (replacing the previous one) and started again, so at most two files are kept. `0` = never. |
