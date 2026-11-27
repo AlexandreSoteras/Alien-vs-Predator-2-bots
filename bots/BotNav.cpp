@@ -1,4 +1,5 @@
 #include "BotNav.h"
+#include <map>
 
 #include <cmath>
 #include <cstdio>
@@ -485,6 +486,39 @@ int BotNav::ReachableCount(int from, int limit, int allowLadders, bool allowClim
     return (int)queue.size();
 }
 
+int BotNav::ComponentSize(int from, int allowLadders, bool allowClimb) const
+{
+    if (from < 0 || from >= (int)m_nodes.size())
+        return 0;
+    const bool ladders = allowLadders < 0 ? m_useLadders : allowLadders != 0;
+    const std::vector<int>& comps = allowClimb ? m_componentClimb : ladders ? m_componentLadders : m_component;
+    int count = 0;
+    for (size_t i = 0; i < comps.size(); ++i)
+        if (comps[i] == comps[from])
+            ++count;
+    return count;
+}
+
+int BotNav::RandomInLargest(float rnd, int allowLadders, bool allowClimb) const
+{
+    const bool ladders = allowLadders < 0 ? m_useLadders : allowLadders != 0;
+    const std::vector<int>& comps = allowClimb ? m_componentClimb : ladders ? m_componentLadders : m_component;
+    std::map<int, int> sizes;
+    for (size_t i = 0; i < comps.size(); ++i)
+        ++sizes[comps[i]];
+    int best = -1, bestN = 0;
+    for (std::map<int, int>::const_iterator it = sizes.begin(); it != sizes.end(); ++it)
+        if (it->second > bestN)
+        {
+            best = it->first;
+            bestN = it->second;
+        }
+    for (size_t i = 0; i < comps.size(); ++i)
+        if (comps[i] == best && !IsBlocked((int)i))
+            return RandomReachable((int)i, rnd, allowLadders, allowClimb);
+    return -1;
+}
+
 int BotNav::RandomReachable(int from, float rnd, int allowLadders, bool allowClimb) const
 {
     if (from < 0 || from >= (int)m_nodes.size())
@@ -519,6 +553,22 @@ namespace avp2bots {
 static bool InBox(const Vec3& p, const Vec3& mn, const Vec3& mx)
 {
     return p.x >= mn.x && p.x <= mx.x && p.z >= mn.z && p.z <= mx.z && p.y >= mn.y && p.y <= mx.y;
+}
+
+int BotNav::BlockDropsNear(const Vec3& portal, float radius)
+{
+    int n = 0;
+    for (size_t i = 0; i < m_nodes.size(); ++i)
+    {
+        std::vector<NavLink>& ls = m_nodes[i].links;
+        for (size_t k = 0; k < ls.size(); ++k)
+            if (ls[k].kind == NAV_DROP && !ls[k].blocked && Dist(ls[k].portal, portal) <= radius)
+            {
+                ls[k].blocked = true;
+                ++n;
+            }
+    }
+    return n;
 }
 
 int BotNav::BlockBox(const Vec3& mn, const Vec3& mx, int* linksBlocked)

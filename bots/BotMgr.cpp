@@ -380,6 +380,23 @@ struct Bot
     // the row id the live object's character FX carries (BotMgr_SfxClientId); not given to another row meanwhile
     uint32 sfxId;
     LTFLOAT strikeCommitUntil;   // a Predator's melee swing under way (BotMgr_MeleeReach)
+    bool strikeAlien;            // ... at an alien (bots.cfg meleedance)
+    LTFLOAT meleeOutUntil;       // stepping out after a blow on an alien (bots.cfg meleedance)
+    int meleeSide;               // ... to this side (1 right, -1 left), alternating
+    LTFLOAT killMoveUntil;       // its target has just died: it moves on until then (bots.cfg killmove)
+    LTFLOAT clawChaseSince;      // an alien closing in for its claws since (bots.cfg clawclose; 0 = not)
+    LTFLOAT circleFlipAt;        // circling a stunned victim: next change of side
+    bool clawHold;               // closing in: the claws' fire keys strike nothing yet (BotMgr_OnFire)
+    LTFLOAT dodgeAt;             // last jump aside from a disc (bots.cfg discdodge)
+    // the drops of the bot's last path (FakeDropUpkeep): portal and landing floor point; a forced re-route
+    std::vector<std::pair<Vec3, Vec3> > drops;
+    bool repathNow;
+    int dropWatch;   // the drop whose landing the bot is moving to (-1: none)
+    bool stanceLow;  // debug (stance): crouched on the floor last frame (STANCE lines at each switch)
+    LTFLOAT cjCrouchUntil, cjJumpUntil, cjNext;   // crouch jump (bots.cfg crouchjump): crouched, then jump held; next
+    LTVector sjPos; LTFLOAT sjSince, sjJumpUntil, sjNext;   // stuck jump (bots.cfg stuckjump)
+    LTFLOAT prefireNext;   // pre-fire at a tracker contact's way out (bots.cfg prefire)
+    LTVector shotDest; LTFLOAT shotUntil, shotNext;   // a fight heard (bots.cfg hearshots)
     bool rowResend;        // its scoreboard row was just added: send its values again at the next row tick
     std::string handWeapon; // the weapon in hand at the last shot attempt (BotMgr_OnFire)
     LTFLOAT weaponReadyAt; // a weapon just taken fires from then on (bots.cfg switchtime)
@@ -419,6 +436,13 @@ struct Bot
     LTFLOAT flightStamp, flightStart;
     bool flightPlayer;
     LTVector flightVel;
+    // travel pounce (BotMgr_TravelPounce): the next check, and the point a pounce set along the path flies toward
+    LTFLOAT travelCheckAt;
+    bool travelPending;
+    LTVector travelDest;
+    LTFLOAT touchStamp;   // debug: the pounce whose first contacts are being logged (BotMgr_PounceTouchIgnored)
+    LTFLOAT pounceBlockLogAt;   // debug: next POUNCETERRAIN line allowed
+    int touchLogs;
     LTFLOAT hugHuntAt;         // facehugger: next victim choice (HugHunt)
     // motion tracker (Marines, 'tracker'; TrackerUpkeep, BotMgr_TrackerBid)
     LTFLOAT trackScanAt;       // next sweep of the detector
@@ -509,12 +533,30 @@ struct Config
     bool nameTags;  // a bot's character FX carries its row id: name under the crosshair, team for the Smart Gun
     bool heavyWalk; // a bot walks with the Smart Gun, the SADAR or the Minigun, as players must (SpeedMod 0)
     bool stunFire;  // a stunned bot can still turn (slowly) and fire, as a stunned player; it only cannot move
+    bool stunLike;  // a stunned bot plays the players' Stunned animation, aims worse (stunAim) and turns slower (stunTurn)
+    bool cloakFire; // a Predator bot turns its cloak off itself before a decloaking shot, a sift or the medicomp
+    bool hearBreak; // bots hear a window or prop break (its debris sound), as players do
+    bool meleeDance; // a Predator bot steps out of an alien's acid after each blow instead of standing its ground
+    bool killMove;   // a bot whose target has just died moves on instead of waiting where it fell
+    bool clawClose;  // an alien bot claws from point-blank and circles a stunned victim, as players do
+    float statusEvery; // seconds between the STATUS lines (debug: 2; smaller to trace a bot's moves)
+    bool discDodge;  // Marine and Predator bots that see a disc coming jump aside at the last moment
+    bool flameMark;  // Marine bots only mark a strong target with the flame thrower, then take a stronger weapon
+    float crouchJump; // chance per second that a Predator or alien bot close to its target crouch-jumps (0 = never)
+    bool stuckJump;   // a bot that pushes against something without moving jumps, as a player does
+    bool preFire;     // a Marine bot with a rocket or grenade launcher fires at where a tracker contact will come out
+    bool wallRun;     // a Runner bot runs along a wall beside its way instead of the floor
+    bool hearShots;   // bots hear gunfire within each weapon's sound radius, as players do
+    float stunAim;  // aim error multiplier while stunned (the players' wobbly view; my choice)
+    float stunTurn; // turn rate multiplier while stunned (the players' mouse sensitivity while stunned: 0.25)
     bool pounceCry; // a bot's pounce plays the pounce cry other players hear from a pouncing player
     bool backpedal; // Marine bots back away from aliens and blades while they shoot (their "Backoff" run-back)
     bool seeBurning; // a burning enemy is noticed twice as fast, and a burning Predator is seen through its cloak
     float alertTime; // seconds a Marine or Predator bot watches where a live enemy left its sight (0 = off)
     bool census;     // diagnostics: the world's objects counted per class every 60 s (CENSUS lines)
     bool lfh;        // ask every heap of the process for the low-fragmentation heap at start (Wine hosts)
+    bool nestedCreate; // engine fix: an object created while another is being created no longer loses its property list
+    bool emptySounds;  // engine fix: no fire-and-forget server sound while no client is connected (the engine kept them)
     bool orphanBlasts; // the rocket or grenade of a bot killed before it landed still explodes (hook botorphanblast)
     float combatJump;  // chance that a Marine or Predator bot jumps at the start of a strafe leg (0 = never)
     bool noCorpseLook; // bots ignore bodies, blood and death cries (the single-player AI investigated them)
@@ -524,6 +566,8 @@ struct Config
     bool clawSpread; // bot melee strikes spread like players' (unit path)
     bool pounce;     // alien bots pounce by the players' rule (0 = the AI's die roll)
     bool pounceFlight; // a bot's pounce flies like a player's (0 = the AI's arc to its predicted point)
+    bool travelPounce; // alien bots pounce ahead along their path to cross open ground, as players do
+    bool stance;       // a Predalien bot in sight of a gun switches between crouching and standing as it closes in
     bool hugLike;      // bot facehuggers hunt and leap like players (0 = the single-player AI facehugger)
     bool wallAmbush;   // alien bots with nothing to fight sometimes wait on a wall near a busy route
     bool wallApproach; // alien bots keep off the open floor a target faces (routes over walls and ledges)
@@ -713,6 +757,22 @@ void LoadConfig()
     g_cfg.nameTags = true;
     g_cfg.heavyWalk = true;
     g_cfg.stunFire = true;
+    g_cfg.stunLike = true;   // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.cloakFire = true;  // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.hearBreak = true;  // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.meleeDance = true; // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.killMove = true;   // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.clawClose = true;  // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.statusEvery = 2.0f;
+    g_cfg.discDodge = true;  // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.flameMark = true;  // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.crouchJump = 0.3f;  // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.stuckJump = true;  // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.preFire = true;    // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.wallRun = true;    // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.hearShots = true;   // on: package e (A/B: no species out of line)
+    g_cfg.stunAim = 3.0f;
+    g_cfg.stunTurn = 0.25f;
     g_cfg.pounceCry = true;
     g_cfg.backpedal = true;
     g_cfg.seeBurning = true;
@@ -721,13 +781,17 @@ void LoadConfig()
     g_cfg.meleeReach = true;
     g_cfg.census = false;
     g_cfg.lfh = true;
+    g_cfg.nestedCreate = true;
+    g_cfg.emptySounds = true;
     g_cfg.orphanBlasts = true;
-    g_cfg.combatJump = 0.0f;   // off until measured and seen with a client (0.15 was the planned value)
+    g_cfg.combatJump = 0.15f;   // on: package e (A/B, all keys on: no species out of line)
     g_cfg.tail = true;
     g_cfg.pounceStun = true;
     g_cfg.clawSpread = true;
     g_cfg.pounce = true;
     g_cfg.pounceFlight = true;
+    g_cfg.travelPounce = true;  // on: package e (A/B, all keys on: no species out of line)
+    g_cfg.stance = true;        // on: package e (A/B, all keys on: no species out of line)
     g_cfg.hugLike = true;
     g_cfg.wallAmbush = true;
     g_cfg.wallApproach = true;
@@ -807,6 +871,22 @@ void LoadConfig()
         else if (!_stricmp(key, "nametags")) g_cfg.nameTags = value != 0.0f;
         else if (!_stricmp(key, "heavywalk")) g_cfg.heavyWalk = value != 0.0f;
         else if (!_stricmp(key, "stunfire")) g_cfg.stunFire = value != 0.0f;
+        else if (!_stricmp(key, "stunlike")) g_cfg.stunLike = value != 0.0f;
+        else if (!_stricmp(key, "cloakfire")) g_cfg.cloakFire = value != 0.0f;
+        else if (!_stricmp(key, "hearbreak")) g_cfg.hearBreak = value != 0.0f;
+        else if (!_stricmp(key, "meleedance")) g_cfg.meleeDance = value != 0.0f;
+        else if (!_stricmp(key, "killmove")) g_cfg.killMove = value != 0.0f;
+        else if (!_stricmp(key, "clawclose")) g_cfg.clawClose = value != 0.0f;
+        else if (!_stricmp(key, "statusevery")) g_cfg.statusEvery = value < 0.05f ? 0.05f : value;
+        else if (!_stricmp(key, "discdodge")) g_cfg.discDodge = value != 0.0f;
+        else if (!_stricmp(key, "flamemark")) g_cfg.flameMark = value != 0.0f;
+        else if (!_stricmp(key, "crouchjump")) g_cfg.crouchJump = value < 0.0f ? 0.0f : (value > 2.0f ? 2.0f : value);
+        else if (!_stricmp(key, "stuckjump")) g_cfg.stuckJump = value != 0.0f;
+        else if (!_stricmp(key, "prefire")) g_cfg.preFire = value != 0.0f;
+        else if (!_stricmp(key, "wallrun")) g_cfg.wallRun = value != 0.0f;
+        else if (!_stricmp(key, "hearshots")) g_cfg.hearShots = value != 0.0f;
+        else if (!_stricmp(key, "stunaim")) g_cfg.stunAim = value < 1.0f ? 1.0f : value;
+        else if (!_stricmp(key, "stunturn")) g_cfg.stunTurn = value < 0.05f ? 0.05f : (value > 1.0f ? 1.0f : value);
         else if (!_stricmp(key, "pouncecry")) g_cfg.pounceCry = value != 0.0f;
         else if (!_stricmp(key, "backpedal")) g_cfg.backpedal = value != 0.0f;
         else if (!_stricmp(key, "seeburning")) g_cfg.seeBurning = value != 0.0f;
@@ -815,6 +895,8 @@ void LoadConfig()
         else if (!_stricmp(key, "meleereach")) g_cfg.meleeReach = value != 0.0f;
         else if (!_stricmp(key, "census")) g_cfg.census = value != 0.0f;
         else if (!_stricmp(key, "lfh")) g_cfg.lfh = value != 0.0f;
+        else if (!_stricmp(key, "nestedcreate")) g_cfg.nestedCreate = value != 0.0f;
+        else if (!_stricmp(key, "emptysounds")) g_cfg.emptySounds = value != 0.0f;
         else if (!_stricmp(key, "orphanblasts")) g_cfg.orphanBlasts = value != 0.0f;
         else if (!_stricmp(key, "combatjump")) g_cfg.combatJump = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
         else if (!_stricmp(key, "tail")) g_cfg.tail = value != 0.0f;
@@ -822,6 +904,8 @@ void LoadConfig()
         else if (!_stricmp(key, "clawspread")) g_cfg.clawSpread = value != 0.0f;
         else if (!_stricmp(key, "pounce")) g_cfg.pounce = value != 0.0f;
         else if (!_stricmp(key, "pounceflight")) g_cfg.pounceFlight = value != 0.0f;
+        else if (!_stricmp(key, "travelpounce")) g_cfg.travelPounce = value != 0.0f;
+        else if (!_stricmp(key, "stance")) g_cfg.stance = value != 0.0f;
         else if (!_stricmp(key, "huglike")) g_cfg.hugLike = value != 0.0f;
         else if (!_stricmp(key, "wallambush")) g_cfg.wallAmbush = value != 0.0f;
         else if (!_stricmp(key, "wallapproach")) g_cfg.wallApproach = value != 0.0f;
@@ -860,6 +944,20 @@ void SendCommand(HOBJECT h, const char* cmd)
     HSTRING hs = g_pLTServer->CreateString(const_cast<char*>(cmd));
     SendTriggerMsgToObject(LTNULL, h, hs);
     g_pLTServer->FreeString(hs);
+}
+
+// Where a character is. CCharacter::GetPosition() is its movement state's position, which the server updates only for
+// characters it moves itself (the AI): a player's movement runs on his client, so on the server it stays where he
+// spawned. Every distance, aim and facing test BotMgr made on a player was against that point: bot aliens almost
+// never pounced at players, charged their tails at them from 250 units while clawing them at 44, missed their head
+// bites (a pounce test on main-20261127-b, 2026-11-27: 0 pounces at the player in four runs, TAILCHARGE
+// dist=246 beside SHOT dist=44). The object's own position is right for players and AI alike.
+LTVector CharPos(const CCharacter* c)
+{
+    LTVector p(0.0f, 0.0f, 0.0f);
+    if (c)
+        g_pLTServer->GetObjectPos(c->m_hObject, &p);
+    return p;
 }
 
 bool IsAlien(const CCharacter* c)
@@ -1228,6 +1326,7 @@ const float kMediHealthFraction = 0.5f;
 // Re-cloaking after a decloak: a person presses cloak again once the cloak delay is over and the shooting has
 // paused for a moment (human habit, conservative).
 const float kRecloakAfterShot = 1.5f;
+const float kRecloakAfterFight = 4.0f;   // cloakfire: no shot for this long and no enemy in sight (my choice)
 
 // Spears a Predator player spawns with: the Spears pool's DefaultAmount (9; MaxAmount 27), which
 // CPlayerObj::AquireDefaultWeapon gives for the spear gun's primary barrel.
@@ -1283,8 +1382,30 @@ void HeavyUpkeep(Bot& b, CAI* ai)
         Log("HEAVY %s %s %s", b.name.c_str(), heavy ? "walks with" : "runs again, now", aw ? aw->Name.c_str() : "-");
 }
 
+// bots.cfg cloakfire: a Predator player turns his cloak off himself before what would force it off (a decloaking
+// weapon's shot, the sift, the medicomp): forced, it cannot come back for CloakDelayTime and the loud "predcloakcharge"
+// plays (CCharacter::ForceCloakOff); turned off by hand, only "predcloakoff" and no delay (HandleCloakToggle). Players:
+// "Pred players most of the time decloak before throwing the disk or shooting plasma (healing or recharging too), and
+// cloak again after shooting". The re-cloak after the shot is EnergyUpkeep's.
+bool PlayerDecloak(Bot& b, CAI* ai, const char* why)
+{
+    if (!g_cfg.cloakFire || b.species != BOT_PREDATOR || !ai)
+        return false;
+    const int before = (int)ai->GetCloakState();
+    if (before != (int)CLOAK_STATE_RAMPUP && before != (int)CLOAK_STATE_ACTIVE)
+        return false;
+    ai->HandleCloakToggle();   // refused while a forced decloak's delay runs, or in water
+    b.cloakWas = (int)ai->GetCloakState();
+    if (b.cloakWas == before)
+        return false;
+    if (g_cfg.debug)
+        Log("DECLOAK %s before %s", b.name.c_str(), why);
+    return true;
+}
+
 void StartSift(Bot& b, CAI* ai, const char* why)
 {
+    PlayerDecloak(b, ai, "a sift");
     const LTFLOAT now = g_pLTServer->GetTime();
     b.siftStart = now;
     b.siftUntil = now + kSiftLength;
@@ -1296,6 +1417,7 @@ void StartSift(Bot& b, CAI* ai, const char* why)
 
 void StartMedicomp(Bot& b, CAI* ai)
 {
+    PlayerDecloak(b, ai, "the medicomp");
     const LTFLOAT now = g_pLTServer->GetTime();
     b.mediStart = now;
     b.mediUntil = now + kMediLength;
@@ -1320,6 +1442,8 @@ const float kTrackRange = 1920.0f;
 const LTFLOAT kTrackPeriod = 0.9f;
 // A blip shows during the 0.4 s sweep; the bot reacts at its end (a person reading the HUD).
 const LTFLOAT kTrackReact = 0.4f;
+
+void PreFireCheck(Bot& b, CAI* ai, CCharacter* threat, LTFLOAT now);   // (bots.cfg prefire, below)
 
 void TrackerUpkeep(Bot& b, CAI* ai)
 {
@@ -1391,6 +1515,7 @@ void TrackerUpkeep(Bot& b, CAI* ai)
     b.trackWatchUntil = now + kTrackReact + kTrackPeriod;  // watch until the next sweep has been read
     b.trackPos = bestPos;
     b.trackThreat = best->m_hObject;
+    PreFireCheck(b, ai, best, now);
     if (g_cfg.debug)
     {
         LTVector d = bestPos;
@@ -1425,6 +1550,13 @@ LTFLOAT HeardAgo(const Bot& b, HOBJECT h, LTFLOAT now)
     return -1.0f;
 }
 
+// bots.cfg killmove: the AI's attack goal waits 5-12 s where it lost its target, also when the target died: after a kill
+// that is standing over the body (21 % of the 2-8 s after an alien bot's kill spent idle within 200 units of the body,
+// no target, pkA logs; players: "I'm afraid bots still watch those bodies after killing (I've seen two aliens watching
+// one body too)"). For kKillMove after its target died a bot's BotRoam outbids that wait (BotMgr_KillMove); a new enemy
+// still takes it into a fight.
+const LTFLOAT kKillMove = 8.0f;   // my choice: longer than the attack goal's wait
+
 void HearUpkeep(Bot& b, CAI* ai)
 {
     // debug: a new target, and whether this bot heard it in the last 3 s (did hearing lead to the fight?)
@@ -1437,13 +1569,24 @@ void HearUpkeep(Bot& b, CAI* ai)
     // nothing happened"). A dead target ends it.
     // (the old target through a smart link: a raw handle of a removed object crashed the engine, found in testing)
     const HOBJECT oldT = b.lastTargetLink.GetHOBJECT();
+    // bots.cfg killmove: the target is dead (or gone): the bot moves on (BotMgr_KillMove)
+    if (!t && b.lastTarget && g_cfg.killMove && b.stage == 0)
+    {
+        CCharacter* old = oldT ? dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(oldT)) : LTNULL;
+        if (!old || old->IsDead())
+        {
+            b.killMoveUntil = g_pLTServer->GetTime() + kKillMove;
+            if (g_cfg.debug)
+                Log("KILLMOVE %s moves on from %s", b.name.c_str(), old ? ObjectLabel(oldT).c_str() : "a removed target");
+        }
+    }
     if (!t && oldT && g_cfg.alertTime > 0.0f && b.species != BOT_ALIEN && b.stage == 0)
     {
         CCharacter* old = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(oldT));
         if (old && !old->IsDead() && g_pCharacterMgr->AreEnemies(*ai, *old))
         {
             const LTFLOAT now = g_pLTServer->GetTime();
-            b.trackPos = old->GetPosition();
+            b.trackPos = CharPos(old);
             b.trackThreat = oldT;
             b.trackReactAt = now + 0.2f;
             b.trackWatchUntil = now + g_cfg.alertTime;
@@ -1582,6 +1725,12 @@ void ResetKit(Bot& b)
     b.flightStamp = b.flightStart = 0.0f;
     b.flightPlayer = false;
     b.flightVel = LTVector(0.0f, 0.0f, 0.0f);
+    b.travelCheckAt = 0.0f;
+    b.travelPending = false;
+    b.travelDest = LTVector(0.0f, 0.0f, 0.0f);
+    b.touchStamp = 0.0f;
+    b.pounceBlockLogAt = 0.0f;
+    b.touchLogs = 0;
     b.hugHuntAt = 0.0f;
 }
 
@@ -1652,6 +1801,79 @@ bool ClearLine(const LTVector& a, const LTVector& b)
     return !g_pLTServer->IntersectSegment(&q, &info);
 }
 
+// bots.cfg prefire: a Marine player whose tracker shows an enemy coming round a corner fires a rocket or a grenade
+// where it will come out (player: "I suggest making them pre fire with explosives when they expect someone to appear
+// around the corner according to the tracker, either to the ground where the enemy would appear or time it to hit the
+// opponent directly"). On a sweep showing a contact coming closer and out of sight (TrackerUpkeep), a Marine bot
+// holding the SADAR or the grenade launcher walks the graph's way from the contact to itself to the first point it can
+// see (where the contact will come out); when the contact is within kPreFireNear of that point along the way and the
+// point lies kPreFireMin-kPreFireMax away (its own blast clear: BotMgr_SplashSafe), the bot turns and fires the
+// weapon in hand at the floor there. At most once every kPreFireGap.
+namespace {
+const float kPreFireNear = 700.0f, kPreFireMin = 300.0f, kPreFireMax = 1500.0f;   // my choices
+const LTFLOAT kPreFireGap = 4.0f;
+}
+
+void PreFireCheck(Bot& b, CAI* ai, CCharacter* threat, LTFLOAT now)
+{
+    if (!g_cfg.preFire || b.species != BOT_MARINE || !threat || now < b.prefireNext || !g_navLoaded)
+        return;
+    const AIWBM_AIWeapon* wb = ai->GetCurrentWeaponButesPtr();
+    CWeapon* cur = ai->GetCurrentWeaponPtr();
+    if (!wb || !cur || !cur->GetBarrelData() || (!strstr(wb->Name.c_str(), "SADAR") && !strstr(wb->Name.c_str(), "Grenade")))
+        return;
+    if (now < b.weaponReadyAt)
+        return;   // still taking it in hand
+    const LTVector me = ai->GetPosition();
+    const LTVector eye = me + LTVector(0.0f, ai->GetDims().y * 0.8f, 0.0f);
+    const LTVector tp = CharPos(threat);
+    if (ClearLine(eye, tp))
+        return;   // in sight: the fight is the AI's
+    const int from = g_nav.Nearest(Vec3(tp.x, tp.y - threat->GetDims().y, tp.z));
+    const int to = g_nav.Nearest(Vec3(me.x, me.y - ai->GetDims().y, me.z));
+    std::vector<Vec3> pts;
+    if (from < 0 || to < 0 || !g_nav.FindPath(from, to, &pts, 0, 0, 1, 0, IsAlien(threat)))
+        return;
+    Vec3 prev(tp.x, tp.y - threat->GetDims().y, tp.z);
+    float along = 0.0f;
+    for (size_t i = 0; i < pts.size() && along <= kPreFireNear; ++i)
+    {
+        along += avp2bots::Dist(prev, pts[i]);
+        prev = pts[i];
+        const LTVector q(pts[i].x, pts[i].y + 8.0f, pts[i].z);
+        if (!ClearLine(eye, q + LTVector(0.0f, 32.0f, 0.0f)))
+            continue;
+        // the first point the bot sees: where the contact will come out
+        const float dist = (q - me).Mag();
+        if (along > kPreFireNear || dist < kPreFireMin || dist > kPreFireMax)
+            return;
+        const LTVector firePos = ai->GetWeaponPosition(cur);
+        LTVector path = q - firePos;
+        if (path.MagSqr() < 1.0f)
+            return;
+        path.Norm();
+        if (!BotMgr_SplashSafe(ai->m_hObject, firePos, path))
+            return;
+        ai->SnapTurn(LTVector(q.x - me.x, 0.0f, q.z - me.z));
+        WFireInfo fi;
+        fi.hFiredFrom = ai->m_hObject;
+        fi.hTestObj = LTNULL;
+        fi.vFirePos = firePos;
+        fi.vFlashPos = firePos;
+        fi.vPath = path;
+        fi.nSeed = (DBYTE)GetRandom(2, 255);
+        fi.fPerturbR = fi.fPerturbU = 1.0f - BotMgr_BotAccuracy(ai->m_hObject);
+        fi.fDamageMultiplier = g_cfg.damageScale;
+        cur->Fire(fi);
+        b.prefireNext = now + kPreFireGap;
+        b.lastShot = now;
+        if (g_cfg.debug)
+            Log("PREFIRE %s %s at %.0f %.0f %.0f (%.0f away) for %s, %.0f along its way", b.name.c_str(), wb->Name.c_str(),
+                q.x, q.y, q.z, dist, ObjectLabel(threat->m_hObject).c_str(), along);
+        return;
+    }
+}
+
 // The client's head-bite rule (CAutoTargetMgr::CheckForLiveAlienTarget): "no head, no head_bite for you!", the
 // model's "Head" piece must be shown. A masked Predator shows "Head_Mask" and hides "Head" (SetupModelPieces), so a
 // player cannot bite him (players: "aliens can headbite Predators who have their masks on").
@@ -1670,10 +1892,15 @@ bool HeadShown(CCharacter* c)
 // or acid patch, by a fall or from a damager that is gone: that read "<bot> killed himself" and gave the player who
 // had set it on fire nothing (players: "sometimes it says they killed themselves", the bot was theirs). A character
 // that hurt it in the last 10 s gets the kill then; its own grenade or a fall with no attacker stays a suicide.
+// Acid is no attack: an alien's blood splashing whoever hurts it (CCharacter acid explosion, DT_ACID) never counts
+// as a hit, and a death by acid stays the game's own (a suicide, as for players; players: "if one bot gets killed with
+// acid from an alien bot, it's counted as a kill for the alien, while in vanilla it's a suicide").
 const LTFLOAT kCreditWindow = 10.0f;
 
-HOBJECT CreditedKiller(const Bot& b, HOBJECT hKiller)
+HOBJECT CreditedKiller(const Bot& b, HOBJECT hKiller, int deathType)
 {
+    if (deathType == DT_ACID)
+        return hKiller;
     // (the bot's object may be gone already when its death is seen: then both handles are null, which is no suicide;
     // a real-client test: 7.5 % of a live server's deaths read "killer=world at 0 0 0" and showed as suicides)
     const HOBJECT self = b.hObj.GetHOBJECT();
@@ -1724,7 +1951,7 @@ LTVector HeadPoint(CCharacter* c)
         g_pLTServer->GetTransformLT()->GetPos(t, v);
         return v;
     }
-    return c->GetPosition() + c->GetHeadOffset();
+    return CharPos(c) + c->GetHeadOffset();
 }
 
 bool Pouncing(CAI* ai)
@@ -1819,13 +2046,13 @@ void AlienKitUpdate(Bot& b, CAI* ai, LTFLOAT now)
             why = "lost";
         else
         {
-            const LTVector aim = tc->GetPosition() + tc->GetChestOffset();
+            const LTVector aim = CharPos(tc) + tc->GetChestOffset();
             const LTVector to = aim - ai->GetPosition();
             dist = to.Mag();
             if (held < kTailCharge && dist <= (float)b.kitClawsBarrel->nRange)
                 why = "close";
             else if (held >= kTailCharge && dist <= (float)b.kitTailBarrel->nRange && !Pouncing(ai) &&
-                     ClearLine(ai->GetPosition(), aim))
+                     now >= b.weaponReadyAt && ClearLine(ai->GetPosition(), aim))
             {
                 ai->SnapTurn(to);
                 const float hpBefore = tc->GetDestructible()->GetHitPoints() + tc->GetDestructible()->GetArmorPoints();
@@ -1857,9 +2084,9 @@ void AlienKitUpdate(Bot& b, CAI* ai, LTFLOAT now)
         return;
     }
 
-    if (!tc || Pouncing(ai))
+    if (!tc || Pouncing(ai) || now < b.weaponReadyAt)   // (weaponReadyAt: the claws' return after a pounce)
         return;
-    const LTVector tpos = tc->GetPosition();
+    const LTVector tpos = CharPos(tc);
     const float dist = (tpos - ai->GetPosition()).Mag();
 
     // a new tail charge: only while the target is beyond the claws' reach (a player who can claw does not stop to
@@ -1970,7 +2197,7 @@ void NetEscapeUpkeep(Bot& b, CAI* ai, LTFLOAT now)
     LTVector aim = ai->GetPosition() + ai->GetForward() * 64.0f;
     if (CCharacter* tc = ht ? dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(ht)) : LTNULL)
     {
-        const LTVector chest = tc->GetPosition() + tc->GetChestOffset();
+        const LTVector chest = CharPos(tc) + tc->GetChestOffset();
         if (!tc->IsDead() && (chest - ai->GetPosition()).Mag() <= (float)bd->nRange)
             aim = chest;
         else
@@ -2074,6 +2301,10 @@ void EnergyUpkeep(Bot& b, CAI* ai)
     if (g_cfg.predHeal && g_cfg.cloak && b.siftUntil == 0.0f && b.mediUntil == 0.0f && ai->HasCloakDevice()
         && (cloak == (int)CLOAK_STATE_INACTIVE || cloak == (int)CLOAK_STATE_RAMPDOWN)
         && now - ai->BotCloakDelayStart() >= CloakDelay() && now - b.lastShot >= kRecloakAfterShot
+        // with cloakfire the bot decloaks by hand to fight: it cloaks again once out of the fight, as a player does
+        // (cloaking between shots cost a re-cloak each time: 11x the re-cloaks, twice the sifts, a quarter of the shots)
+        && (!g_cfg.cloakFire || (now - b.lastShot >= kRecloakAfterFight &&
+                                 !(ai->HasTarget() && ai->GetTarget().IsPartiallyVisible())))
         && b.energy >= CloakInitialCost() && !ai->GetMovement()->IsInLiquidContainer(CM_CONTAINER_LOWER))
     {
         ai->HandleCloakToggle();
@@ -2290,6 +2521,26 @@ bool Spawn(Bot& b)
     b.netCuts = 0;
     b.sfxId = 0;
     b.strikeCommitUntil = 0.0f;
+    b.strikeAlien = false;
+    b.meleeOutUntil = 0.0f;
+    b.meleeSide = 1;
+    b.killMoveUntil = 0.0f;
+    b.clawChaseSince = 0.0f;
+    b.circleFlipAt = 0.0f;
+    b.clawHold = false;
+    b.dodgeAt = -100.0f;
+    b.drops.clear();
+    b.repathNow = false;
+    b.dropWatch = -1;
+    b.stanceLow = false;
+    b.cjCrouchUntil = 0.0f;
+    b.cjJumpUntil = 0.0f;
+    b.cjNext = 0.0f;
+    b.sjPos = LTVector(0.0f, 0.0f, 0.0f);
+    b.sjSince = b.sjJumpUntil = b.sjNext = 0.0f;
+    b.prefireNext = 0.0f;
+    b.shotDest = LTVector(0.0f, 0.0f, 0.0f);
+    b.shotUntil = b.shotNext = 0.0f;
     b.rowResend = false;
     b.weaponReadyAt = 0.0f;
     b.handWeapon.clear();   // a new life starts with its weapon in hand
@@ -2595,20 +2846,26 @@ void LogStatus(Bot& b, LTFLOAT now)
         CharacterMovement* cm = ai->GetMovement();
         const LTVector& vel = cm->GetVelocity();
         // injured: the AI's forced crawl after losing a leg (hook 'botlimbs' keeps it at 0 for bots)
-        Log("  MOVE %s action=%s canAct=%d move=%s cms=%s ctrl=%08lX speed=%.0f injured=%d",
+        const LTVector md = mv ? mv->BotGetDest() : LTVector(0.0f, 0.0f, 0.0f);
+        Log("  MOVE %s action=%s canAct=%d move=%s cms=%s ctrl=%08lX speed=%.0f injured=%d dest=%.0f %.0f %.0f",
             b.name.c_str(), act ? typeid(*act).name() : "none", (int)ai->CanDoNewAction(),
             !mv ? "none" : mv->IsSet() ? "set" : mv->IsDone() ? "done" : mv->IsStuck() ? "stuck" : "other",
             cm->GetMovementStateName(cm->GetMovementState()), (unsigned long)cm->GetControlFlags(), vel.Mag(),
-            (int)ai->GetInjuredMovement());
+            (int)ai->GetInjuredMovement(), md.x, md.y, md.z);
         if (ai->HasTarget())
         {
             // what the attack code sees of the target: sense (partial/full), range, burst delay
             const CAITarget& t = ai->GetTarget();
             LTVector tp;
             g_pLTServer->GetObjectPos(t.GetObject(), &tp);
-            Log("  TARGET %s partial=%d full=%d maintained=%d range=%.0f burstok=%d",
+            // charpos: the distance BotMgr's tests use (CharPos); movement: the character's movement-state position, which
+            // stays at a player's spawn point on the server (the old error)
+            const CCharacter* tch = t.GetCharacterPtr();
+            const LTVector mp = tch ? tch->GetPosition() : LTVector(0.0f, 0.0f, 0.0f);
+            Log("  TARGET %s partial=%d full=%d maintained=%d range=%.0f burstok=%d charpos=%.0f movement=%.0f %.0f %.0f%s",
                 b.name.c_str(), (int)t.IsPartiallyVisible(), (int)t.IsFullyVisible(), (int)t.IsMaintained(),
-                (tp - pos).Mag(), (int)ai->BurstDelayExpired());
+                (tp - pos).Mag(), (int)ai->BurstDelayExpired(), tch ? (CharPos(tch) - pos).Mag() : -1.0f, mp.x, mp.y, mp.z,
+                tch && IsPlayer(tch->m_hObject) ? " player" : "");
         }
 
         // animation diagnostics: movement is gated by the playing tracker set's MovementAllowed flag
@@ -2944,6 +3201,26 @@ void AddBot(BotSpecies sp, const BotClass* forced, LTFLOAT when)
     b.netCuts = 0;
     b.sfxId = 0;
     b.strikeCommitUntil = 0.0f;
+    b.strikeAlien = false;
+    b.meleeOutUntil = 0.0f;
+    b.meleeSide = 1;
+    b.killMoveUntil = 0.0f;
+    b.clawChaseSince = 0.0f;
+    b.circleFlipAt = 0.0f;
+    b.clawHold = false;
+    b.dodgeAt = -100.0f;
+    b.drops.clear();
+    b.repathNow = false;
+    b.dropWatch = -1;
+    b.stanceLow = false;
+    b.cjCrouchUntil = 0.0f;
+    b.cjJumpUntil = 0.0f;
+    b.cjNext = 0.0f;
+    b.sjPos = LTVector(0.0f, 0.0f, 0.0f);
+    b.sjSince = b.sjJumpUntil = b.sjNext = 0.0f;
+    b.prefireNext = 0.0f;
+    b.shotDest = LTVector(0.0f, 0.0f, 0.0f);
+    b.shotUntil = b.shotNext = 0.0f;
     b.rowResend = false;
     b.weaponReadyAt = 0.0f;
     b.handWeapon.clear();   // a new life starts with its weapon in hand
@@ -3031,17 +3308,87 @@ bool BotMgr_EndPause()
 // swing as soon as the target stepped beyond, so a target backing away was never hit.
 const float kMeleeWindup = 0.5f;    // seconds from the start of the swing to the blow (measured: STRIKEGO -> SHOT, median 0.50 s)
 const float kMeleeMargin = 0.85f;   // part of the reach counted on
+// bots.cfg meleedance: an alien hit bleeds acid around itself (CCharacter's acid explosion, AcidHitRad 150 units), and a
+// Predator player with blades does not stand there trading blows (players: "Preds, even with melee weapons, should move
+// around more: strafe, keep some distance from aliens. Standing your ground while exchanging blows with aliens at close
+// distance means huge damage from their acid"). After each blow on an alien a bot backs off to one side for kMeleeOut
+// (BotMgr_MeleeReach returns 2: hook 'botmeleeout' runs it back and sideways), the sides alternating, then closes again.
+const float kMeleeOut = 0.5f;       // my choice: at a Predator's run, out of the acid's 150 units and an alien's claws
+
+// bots.cfg clawclose: an alien player walks right into his victim before clawing (the claws' blows spread, and only at
+// point-blank does the victim take them all; bots.cfg clawspread) and circles a stunned victim rather than stand still
+// for its friends to shoot (players: "Sometimes aliens claw from a longer distance (sometimes they move away from their
+// victim and claw them at their max range). Most players almost walk right into the enemy (with crouch too) before
+// clawing ... Aliens also circle around the stunned victim"). The AI clawed anywhere within its ideal range and backed
+// off inside its minimum. A bot closes in to kClawClose of the claws' reach (giving up after kClawChase when it cannot
+// get nearer: a ledge, a crate), strikes there, and strafes around a stunned or netted victim (sides every 0.6-1.2 s).
+const float kClawClose = 0.45f;   // part of the claws' reach (Claws_*_MP 150 units: 68, near body contact; my choice)
+const LTFLOAT kClawChase = 0.6f;  // my choice
+
+int ClawReach(Bot* b, CAI* pAI, float dist)
+{
+    const LTFLOAT now = g_pLTServer->GetTime();
+    const CAITarget& t = pAI->GetTarget();
+    const CCharacter* tc = t.GetCharacterPtr();
+    const float reach = b->kitClawsBarrel ? (float)b->kitClawsBarrel->nRange : 150.0f;
+    b->clawHold = false;
+    if (!tc || tc->IsDead() || dist > reach)
+    {
+        b->clawChaseSince = 0.0f;
+        return 0;
+    }
+    if (tc->IsStunned() || tc->IsNetted())
+    {
+        if (now >= b->circleFlipAt)
+        {
+            b->meleeSide = -b->meleeSide;
+            b->circleFlipAt = now + GetRandom(0.6f, 1.2f);
+        }
+        b->clawChaseSince = 0.0f;
+        return 3;   // circle and claw
+    }
+    LTVector tp;
+    g_pLTServer->GetObjectPos(t.GetObject(), &tp);
+    const bool level = fabsf(tp.y - pAI->GetPosition().y) < 48.0f;
+    if (dist > kClawClose * reach && level)
+    {
+        if (b->clawChaseSince == 0.0f)
+            b->clawChaseSince = now;
+        if (now - b->clawChaseSince < kClawChase)
+        {
+            b->clawHold = true;
+            return 1;   // closer first (its claws wait: BotMgr_OnFire)
+        }
+    }
+    else
+        b->clawChaseSince = 0.0f;
+    return -1;          // claw from here (no backing off)
+}
 
 int BotMgr_MeleeReach(CAI* pAI, float fTargetRangeSqr)
 {
     if (!g_cfg.meleeReach || !pAI || g_bots.empty())
         return 0;
     Bot* b = FindBot(pAI->m_hObject);
+    if (b && b->species == BOT_ALIEN && b->stage == 0 && g_cfg.clawClose && pAI->HasTarget())
+        return ClawReach(b, pAI, sqrtf(fTargetRangeSqr));
     if (!b || b->species != BOT_PREDATOR)
         return 0;
     const LTFLOAT now = g_pLTServer->GetTime();
     if (now < b->strikeCommitUntil)
         return -1;
+    if (now < b->meleeOutUntil)
+        return 2;
+    if (b->strikeCommitUntil > 0.0f && b->strikeAlien && g_cfg.meleeDance)
+    {
+        // the blow has landed on an alien: out of its acid, to the other side than last time
+        b->strikeCommitUntil = 0.0f;
+        b->meleeOutUntil = now + kMeleeOut;
+        b->meleeSide = -b->meleeSide;
+        if (g_cfg.debug)
+            Log("MELEEOUT %s side=%d", b->name.c_str(), b->meleeSide);
+        return 2;
+    }
     const CWeapon* w = pAI->GetCurrentWeaponPtr();
     const BARREL* bd = w ? w->GetBarrelData() : 0;
     if (!bd || !pAI->HasTarget())
@@ -3063,9 +3410,19 @@ int BotMgr_MeleeReach(CAI* pAI, float fTargetRangeSqr)
     if (predicted > kMeleeMargin * (float)bd->nRange)
         return 1;
     b->strikeCommitUntil = now + kMeleeWindup + 0.1f;
+    {
+        const CCharacter* tc = pAI->GetTarget().GetCharacterPtr();
+        b->strikeAlien = tc && IsAlien(tc);
+    }
     if (g_cfg.debug)
         Log("STRIKEGO %s dist=%.0f away=%.0f reach=%d", b->name.c_str(), dist, away, bd->nRange);
     return -1;
+}
+
+int BotMgr_MeleeSide(CAI* pAI)
+{
+    const Bot* b = pAI ? FindBot(pAI->m_hObject) : 0;
+    return b ? b->meleeSide : 1;
 }
 
 bool BotMgr_OrphanBlasts()
@@ -3076,6 +3433,36 @@ bool BotMgr_OrphanBlasts()
 bool BotMgr_StunFire(HOBJECT hObj)
 {
     return g_cfg.stunFire && FindBot(hObj) != 0;
+}
+
+// A bot's CAI::m_pCurrentWeapon pointed at a freed weapon once (TargetAimPoint read garbage: evac_colony as Deathmatch,
+// 2026-11-27, a Predator; the old "stale weapon" crash of the TDM regressions). CAI::Update now compares it with its
+// weapon attachment's current weapon every frame and takes the attachment's (hook 'botweaponsync'); each case is
+// logged, to find what frees it.
+void BotMgr_WeaponSync(HOBJECT hObj, bool hasWeapon)
+{
+    const Bot* b = FindBot(hObj);
+    Log("WEAPONSYNC %s: its current weapon pointer was stale (%s)", b ? b->name.c_str() : ObjectLabel(hObj).c_str(),
+        hasWeapon ? "now the attachment's weapon" : "no weapon in hand");
+}
+
+// A stunned player (USRFLG_CHAR_STUNNED: a pounce, a stun grenade): the server plays his "Stunned" action
+// (CPlayerObj::UpdateActionAnimation) and his client cannot move, turns at a quarter of his mouse sensitivity and sees a
+// wobbly view (CGameClientShell::UpdateStunEffect, CAMERAMGRFX_ID_WONKY). With stunlike a stunned bot does the same:
+// the animation (hook 'botstunanim'), its turns at stunturn (hook 'botstunturn') and its aim error x stunaim
+// (BotMgr_AimError). Players: "There is no stun animation. Also add a configurable penalty to accuracy and turning speed
+// while the bot is stunned, like there is for players."
+bool BotMgr_StunAnim(HOBJECT hObj)
+{
+    if (!g_cfg.stunLike || !FindBot(hObj))
+        return false;
+    CCharacter* c = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hObj));
+    return c && c->IsStunned() && !c->IsNetted();
+}
+
+LTFLOAT BotMgr_TurnScale(HOBJECT hObj)
+{
+    return BotMgr_StunAnim(hObj) ? g_cfg.stunTurn : 1.0f;
 }
 
 uint32 BotMgr_SfxClientId(HOBJECT hObj)
@@ -4272,18 +4659,18 @@ bool EvacDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
                 CCharacter* c = *it;
                 if (!c || c == pAI || c->IsDead() || SpeciesOf(c) != EvacRace(0))
                     continue;
-                const float d = (c->GetPosition() - p).Mag();
+                const float d = (CharPos(c) - p).Mag();
                 if (d < mateD)
                 {
                     mateD = d;
                     mate = c;
                 }
-                if (d < 1500.0f && (z->center - c->GetPosition()).Mag() > myZone + 500.0f)
+                if (d < 1500.0f && (z->center - CharPos(c)).Mag() > myZone + 500.0f)
                     lead = true;
             }
             if (mate && mateD > 800.0f)
             {
-                *pDest = mate->GetPosition();
+                *pDest = CharPos(mate);
                 if (g_cfg.debug)
                     Log("EVACDEST %s defender -> regroup with %s (%.0f away)", b->name.c_str(),
                         ObjectLabel(mate->m_hObject).c_str(), mateD);
@@ -4338,7 +4725,7 @@ bool EvacDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
         CCharacter* c = *it;
         if (!c || c == pAI || c->IsDead() || SpeciesOf(c) != defRace)
             continue;
-        const float d = (c->GetPosition() - p).Mag();
+        const float d = (CharPos(c) - p).Mag();
         if (d < nearestD)
         {
             nearestD = d;
@@ -4364,7 +4751,7 @@ bool EvacDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
         *pDest = EvacNodePos(EvacInsideNode(z, pAI), dims);
     else if (best)
     {
-        *pDest = best->GetPosition();
+        *pDest = CharPos(best);
         pDest->x += GetRandom(-200.0f, 200.0f);
         pDest->z += GetRandom(-200.0f, 200.0f);
     }
@@ -4626,7 +5013,7 @@ bool BotMgr_HideDest(CAI* pAI, LTVector* pDest)
             CCharacter* c = *it;
             if (!c || c == pAI || c->IsDead() || !g_pCharacterMgr->AreEnemies(*pAI, *c))
                 continue;
-            const float d = (c->GetPosition() - dest).Mag();
+            const float d = (CharPos(c) - dest).Mag();
             if (d < nearest)
                 nearest = d;
         }
@@ -5134,10 +5521,37 @@ HOBJECT AutoTarget(CAI* ai, HOBJECT hAITarget, const LTVector& dir, int mode, st
 
 } // namespace
 
+// bots.cfg flamemark: the flame thrower is no way to kill a strong opponent (Predalien, heavy Predator: their health and
+// armour), but it sets him alight, which shows him through a cloak and the dark (seeburning) and blinds him behind
+// the flames; a player marks him, then takes a stronger weapon (players: "marines should not try to use the
+// flamethrower to kill stronger opponents like the predalien or heavy pred, unless to make the target more visible and
+// make it harder for them to see through the flames; then they should quickly switch to a stronger weapon"). A Marine
+// bot's flame thrower counts as unusable on a target of kStrongTarget health and armour or more once it burns.
+const float kStrongTarget = 300.0f;   // Predalien_MP 300 health; my threshold
+static bool Burning(HOBJECT h);
+
+bool FlameMarkDone(HOBJECT hAI)
+{
+    CAI* ai = dynamic_cast<CAI*>(g_pLTServer->HandleToObject(hAI));
+    if (!ai || !ai->HasTarget())
+        return false;
+    const CCharacter* tc = ai->GetTarget().GetCharacterPtr();
+    if (!tc || tc->IsDead())
+        return false;
+    const CDestructible* d = const_cast<CCharacter*>(tc)->GetDestructible();
+    return d && d->GetMaxHitPoints() + d->GetMaxArmorPoints() >= kStrongTarget && Burning(tc->m_hObject);
+}
+
 bool BotMgr_WeaponUsable(HOBJECT hAI, const char* szWeapon)
 {
     if (!szWeapon || g_bots.empty())
         return true;
+    if (g_cfg.flameMark && !_stricmp(szWeapon, "Flame_Thrower_MP"))
+    {
+        Bot* fb = FindBot(hAI);
+        if (fb && fb->species == BOT_MARINE && FlameMarkDone(hAI))
+            return false;
+    }
     if (!_stricmp(szWeapon, kPRGrenade))
     {
         // the pulse rifle's grenades: only those the bot carries (bots.cfg altfire)
@@ -5685,7 +6099,7 @@ bool BotMgr_SurvivorDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
         CCharacter* c = *it;
         if (!c || c == pAI || c->IsDead() || SpeciesOf(c) != survRace)
             continue;
-        const float d = (c->GetPosition() - p).Mag();
+        const float d = (CharPos(c) - p).Mag();
         if (survivor)
         {
             if (d < bestD)
@@ -5711,7 +6125,7 @@ bool BotMgr_SurvivorDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
         b->survHoldUntil = *pHoldUntil;
         return true;
     }
-    LTVector dest = best->GetPosition();
+    LTVector dest = CharPos(best);
     if (!survivor)
     {
         dest.x += GetRandom(-200.0f, 200.0f);
@@ -5720,7 +6134,7 @@ bool BotMgr_SurvivorDest(CAI* pAI, LTVector* pDest, LTFLOAT* pHoldUntil)
     *pDest = dest;
     if (g_cfg.debug)
         Log("SURVDEST %s %s -> %s at %.0f", b->name.c_str(), survivor ? "regroup" : "hunt",
-            ObjectLabel(best->m_hObject).c_str(), (best->GetPosition() - p).Mag());
+            ObjectLabel(best->m_hObject).c_str(), (CharPos(best) - p).Mag());
     return true;
 }
 
@@ -6133,6 +6547,138 @@ void EnableLowFragmentationHeaps()
     Log("HEAP %lu heaps: low-fragmentation heap already on %d, turned on %d", (unsigned long)n, already, ok);
 }
 
+// Engine fix (bots.cfg nestedcreate). server.dll's CreateObject/CreateObjectProps keep the property list of the object
+// being created in one field of the server manager (+0xE78): cleared when a creation starts, read by the new object's
+// ReadProp, given back to its pool when the creation ends. An object created during another one's creation (a Marine
+// or Predator bot's weapon and gear attachments, made in its InitialUpdate) clears the field, so the outer list is
+// never given back: 192 bytes per property, ~1.1 KB per Marine or Predator spawn, never freed (the live servers'
+// slow growth, found with a heap probe; Alien bots have no attachment and lost nothing). Every creation through the
+// interface now puts the field back as it found it, which is a no-op when nothing was being created. Only with the
+// server.dll these offsets were read from (the 2002 engine every AIO and MSP server runs): checked byte by byte.
+namespace
+{
+typedef LPBASECLASS (*CreateObjectFn)(HCLASS, ObjectCreateStruct*);
+typedef LPBASECLASS (*CreateObjectPropsFn)(HCLASS, ObjectCreateStruct*, char*);
+CreateObjectFn g_engineCreateObject = LTNULL;
+CreateObjectPropsFn g_engineCreateObjectProps = LTNULL;
+char** g_ppServerMgr = LTNULL;  // server.dll's global server manager pointer
+const unsigned kCurPropList = 0xE78;
+
+inline void** CurrentPropList()
+{
+    return (g_ppServerMgr && *g_ppServerMgr) ? (void**)(*g_ppServerMgr + kCurPropList) : LTNULL;
+}
+
+LPBASECLASS NestedSafeCreateObject(HCLASS hClass, ObjectCreateStruct* pStruct)
+{
+    void** cur = CurrentPropList();
+    void* const outer = cur ? *cur : LTNULL;
+    LPBASECLASS obj = g_engineCreateObject(hClass, pStruct);
+    if (cur)
+        *cur = outer;
+    return obj;
+}
+
+LPBASECLASS NestedSafeCreateObjectProps(HCLASS hClass, ObjectCreateStruct* pStruct, char* pszProps)
+{
+    void** cur = CurrentPropList();
+    void* const outer = cur ? *cur : LTNULL;
+    LPBASECLASS obj = g_engineCreateObjectProps(hClass, pStruct, pszProps);
+    if (cur)
+        *cur = outer;
+    return obj;
+}
+
+// Engine fix (bots.cfg emptysounds). server.dll queues each server-side sound to every client in the world and frees
+// it once all of them were sent it; with no client connected nobody holds it and it is never freed (356 bytes each:
+// a Predator disc's wall impacts, ~0.6 KB per Predator spawn on a server with bots only). A sound nobody can hear and
+// nobody holds (no handle, no loop) is not handed to the engine while no client is connected.
+typedef LTRESULT (*PlaySoundFn)(PlaySoundInfo*);
+PlaySoundFn g_enginePlaySound = LTNULL;
+
+LTRESULT EmptyServerPlaySound(PlaySoundInfo* psi)
+{
+    if (psi && !(psi->m_dwFlags & (PLAYSOUND_GETHANDLE | PLAYSOUND_LOOP)) && !g_pLTServer->GetNextClient(LTNULL))
+    {
+        psi->m_hSound = LTNULL;
+        return LT_OK;
+    }
+    return g_enginePlaySound(psi);
+}
+
+bool SetInterfaceFn(void** slot, void* fn)
+{
+    DWORD old;
+    if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &old))
+        return false;
+    *slot = fn;
+    VirtualProtect(slot, sizeof(*slot), old, &old);
+    return true;
+}
+}
+
+void EmptySoundsFixUpkeep()
+{
+    const bool on = g_enginePlaySound != LTNULL;
+    if (g_cfg.emptySounds && !on)
+    {
+        g_enginePlaySound = g_pLTServer->PlaySound;
+        if (SetInterfaceFn((void**)&g_pLTServer->PlaySound, (void*)EmptyServerPlaySound))
+            Log("EMPTYSOUNDS on: no fire-and-forget server sound while no client is connected");
+        else
+            g_enginePlaySound = LTNULL;
+    }
+    else if (!g_cfg.emptySounds && on)
+    {
+        SetInterfaceFn((void**)&g_pLTServer->PlaySound, (void*)g_enginePlaySound);
+        g_enginePlaySound = LTNULL;
+        Log("EMPTYSOUNDS off");
+    }
+}
+
+void NestedCreateFixUpkeep()
+{
+    static bool checked = false, known = false;
+    if (!checked)
+    {
+        checked = true;
+        // server.dll + 0x3A013 = CreateObjectProps: mov eax,[g_pServerMgr] (0x3A03E); mov [eax+0E78h],ebx (0x3A047);
+        // mov eax,[eax+0E78h] (0x3A107); mov [ecx+0E78h],ebx (0x3A1A5)
+        const unsigned char* b = (const unsigned char*)GetModuleHandleA("server.dll");
+        static const unsigned char kClear[] = {0x89, 0x98, 0x78, 0x0E, 0x00, 0x00};
+        static const unsigned char kRead[] = {0x8B, 0x80, 0x78, 0x0E, 0x00, 0x00};
+        static const unsigned char kEnd[] = {0x89, 0x99, 0x78, 0x0E, 0x00, 0x00};
+        known = b && b[0x3A03E] == 0xA1 && !memcmp(b + 0x3A047, kClear, 6) && !memcmp(b + 0x3A107, kRead, 6) &&
+                !memcmp(b + 0x3A1A5, kEnd, 6) && b[0x3A000] == 0x8B && b[0x3A001] == 0x0D &&
+                *(const DWORD*)(b + 0x3A002) == *(const DWORD*)(b + 0x3A03F);
+        if (known)
+            g_ppServerMgr = *(char** const*)(b + 0x3A03F);
+        else
+            Log("NESTEDCREATE off: this server.dll is not the one the fix was written for");
+    }
+    if (!known)
+        return;
+    const bool on = g_engineCreateObject != LTNULL;
+    if (g_cfg.nestedCreate && !on)
+    {
+        g_engineCreateObject = g_pLTServer->CreateObject;
+        g_engineCreateObjectProps = g_pLTServer->CreateObjectProps;
+        if (SetInterfaceFn((void**)&g_pLTServer->CreateObject, (void*)NestedSafeCreateObject) &&
+            SetInterfaceFn((void**)&g_pLTServer->CreateObjectProps, (void*)NestedSafeCreateObjectProps))
+            Log("NESTEDCREATE on: objects created during another creation keep its property list");
+    }
+    else if (!g_cfg.nestedCreate && on)
+    {
+        SetInterfaceFn((void**)&g_pLTServer->CreateObject, (void*)g_engineCreateObject);
+        SetInterfaceFn((void**)&g_pLTServer->CreateObjectProps, (void*)g_engineCreateObjectProps);
+        g_engineCreateObject = LTNULL;
+        g_engineCreateObjectProps = LTNULL;
+        Log("NESTEDCREATE off");
+    }
+}
+
+void FakeDropUpkeep(Bot& b, CAI* ai);   // (a drop the game does not have, below)
+
 void BotMgr_PostStartWorld()
 {
     g_bots.clear();
@@ -6146,6 +6692,8 @@ void BotMgr_PostStartWorld()
         g_log = fopen("avp2bots_bots.log", "a");
     Msp_LoadKey(); // the MSP 2.4 scrambling constant, from lithserver.rez (once; logs MSPKEY)
     EnableLowFragmentationHeaps(); // once per process (bots.cfg lfh)
+    NestedCreateFixUpkeep();       // engine property-list fix (bots.cfg nestedcreate)
+    EmptySoundsFixUpkeep();        // engine sound-record fix (bots.cfg emptysounds)
 
     g_map = CurrentMapName();
     if (!GameTypeAllowed())
@@ -6240,7 +6788,8 @@ void BotMgr_Update()
             {
                 // the game's last damager, or the last character that hit it (CreditedKiller): also when the AI
                 // object is gone already (removed in its own update before this one: no damager to read)
-                HOBJECT killer = CreditedKiller(b, ai ? ai->GetDestructible()->GetLastDamager() : LTNULL);
+                HOBJECT killer = CreditedKiller(b, ai ? ai->GetDestructible()->GetLastDamager() : LTNULL,
+                                                ai ? (int)ai->GetDestructible()->GetDeathType() : -1);
                 b.alive = false;
                 b.deaths++;
                 b.respawnTime = now + g_cfg.respawnDelay;
@@ -6376,12 +6925,33 @@ void BotMgr_Update()
             NetEscapeUpkeep(b, ai, now);
             AlienKitUpdate(b, ai, now);
             HugHunt(b, ai, now);
+            FakeDropUpkeep(b, ai);
+            if (g_cfg.stance && g_cfg.debug && b.species == BOT_ALIEN && !strcmp(ClassName(b), "Predalien"))
+            {
+                // each crouch / stand switch on the floor (a crouched alien is in wall-walk mode, its up still up)
+                const bool low = (ai->GetMovement()->GetControlFlags() & CM_FLAG_WALLWALK) && ai->GetUp().y > 0.9f;
+                if (low != b.stanceLow)
+                {
+                    b.stanceLow = low;
+                    const CCharacter* stc = ai->HasTarget() ? ai->GetTarget().GetCharacterPtr() : 0;
+                    const LTVector& sp = ai->GetPosition();
+                    Log("STANCE %s %s at %.0f %.0f %.0f target=%s dist=%.0f", b.name.c_str(), low ? "crouch" : "stand", sp.x,
+                        sp.y, sp.z, stc ? ObjectLabel(stc->m_hObject).c_str() : "-", stc ? (CharPos(stc) - sp).Mag() : -1.0f);
+                }
+            }
             {
                 // debug: every pounce a bot starts, under either rule (POUNCESTART; hits are POUNCESTUN lines)
                 const CharacterMovementState pcms = ai->GetMovement()->GetMovementState();
                 const bool pouncing = pcms == CMS_POUNCING || pcms == CMS_FACEHUG;
                 if (!pouncing && b.pouncing && b.stage == 1)
                     b.pounceTouched = pcms == CMS_FACEHUG_ATTACH ? std::string("hug") : std::string();
+                // A player's pounce is a weapon of its own (HandlePounceJump forces the class's pounce weapon): after
+                // it the claws come back by a weapon change before they, the tail or the jaw strike again (players:
+                // "players need to wait 750 ms until the pounce animation is complete to attack with claws, tail or
+                // headbite"). The same wait as a bot's weapon change (bots.cfg switchtime).
+                if (!pouncing && b.pouncing && b.stage == 0 && b.species == BOT_ALIEN && g_cfg.switchTime > 0.0f &&
+                    b.weaponReadyAt < now + g_cfg.switchTime)
+                    b.weaponReadyAt = now + g_cfg.switchTime;
                 if (!pouncing && b.pouncing && g_cfg.debug)
                 {
                     // how it ended: what it touched first (nothing: the flight ended short of anything)
@@ -6614,7 +7184,7 @@ void BotMgr_Update()
             }
             g_nextTeamLog = now + 20.0f;
         }
-        g_nextStatus = now + 2.0f;
+        g_nextStatus = now + g_cfg.statusEvery;
     }
 }
 
@@ -6642,10 +7212,41 @@ float Gauss()
 }
 }
 
+// A start point on a small island of the graph (fewer than kIslandNodes reachable waypoints for this kind of bot):
+// a bot spawned there paced its few waypoints until its stuck checks removed it (dm_aizin 1296 160 -1328, where the
+// graph does not join the floor 64 units below: the same Marine slot removed at every map start, in prod on 4
+// servers). Such start points are skipped for bots, as the generator's cut-off ones (computed once a map).
+const int kIslandNodes = 200;
+std::map<std::string, bool> g_spawnIsland;   // "x y z alien" -> on an island (for the map in g_spawnIslandMap)
+std::string g_spawnIslandMap;
+
+bool SpawnOnIsland(const LTVector& vPos, bool alien)
+{
+    if (g_spawnIslandMap != g_map)
+    {
+        g_spawnIsland.clear();
+        g_spawnIslandMap = g_map;
+    }
+    char key[64];
+    sprintf(key, "%.0f %.0f %.0f %d", vPos.x, vPos.y, vPos.z, alien ? 1 : 0);
+    std::map<std::string, bool>::iterator it = g_spawnIsland.find(key);
+    if (it != g_spawnIsland.end())
+        return it->second;
+    const int k = g_nav.Nearest(Vec3(vPos.x, vPos.y - 32.0f, vPos.z));
+    const bool island = k < 0 || g_nav.ReachableCount(k, kIslandNodes, (!alien && g_cfg.ladders) ? 1 : 0,
+                                                       alien && g_cfg.wallwalk) < kIslandNodes;
+    g_spawnIsland[key] = island;
+    if (island)
+        Log("SPAWNISLAND start point %.0f %.0f %.0f skipped for %s bots (a small island of the graph)", vPos.x, vPos.y,
+            vPos.z, alien ? "alien" : "Marine and Predator");
+    return island;
+}
+
 int BotMgr_StartPointDist(const LTVector& vPos, LTFLOAT& fFarDist, LTFLOAT& fNearDist)
 {
     if (g_spawningSpecies >= 0 && g_nav.IsLoaded() &&
-        g_nav.IsBadSpawn(Vec3(vPos.x, vPos.y, vPos.z), g_spawningSpecies == BOT_ALIEN))
+        (g_nav.IsBadSpawn(Vec3(vPos.x, vPos.y, vPos.z), g_spawningSpecies == BOT_ALIEN) ||
+         SpawnOnIsland(vPos, g_spawningSpecies == BOT_ALIEN)))
         fNearDist = -1.0f;
     int n = 0;
     for (size_t i = 0; i < g_bots.size(); ++i)
@@ -6926,6 +7527,21 @@ bool BotMgr_OnFire(HOBJECT hShooter)
     // animation's fire keys (which would hit at the AI's last target)
     if (bot && (bot->feeding || bot->tailSince > 0.0f || bot->biteAt > 0.0f))
         return false;
+    // closing in to point-blank before clawing (bots.cfg clawclose, ClawReach); and no swing at a target beyond the claws'
+    // reach (the AI's claw animation struck whatever the distance: a quarter of its claw shots beyond 250 units)
+    if (bot && bot->species == BOT_ALIEN && bot->stage == 0 && g_cfg.clawClose && w && bot->kitClawsBarrel &&
+        strstr(w->Name.c_str(), "Claws"))
+    {
+        if (bot->clawHold)
+            return false;
+        if (ai && ai->HasTarget())
+        {
+            LTVector tp;
+            g_pLTServer->GetObjectPos(ai->GetTarget().GetObject(), &tp);
+            if ((tp - ai->GetPosition()).Mag() > 1.15f * (float)bot->kitClawsBarrel->nRange)
+                return false;
+        }
+    }
     // A player's new weapon fires only once its select animation has played (and the old one's deselect): the AI
     // changed weapons at once, so a Predator bot threw its disc and fired its plasma pistol in the same instant
     // (players on prod: "pred can throw disk and shoot from pistol same time", "pistol to sniper in 0.0000001
@@ -6972,6 +7588,11 @@ bool BotMgr_OnFire(HOBJECT hShooter)
             return false;
         }
         // the energy is spent in BotMgr_FireCommit, once the shot really leaves (not held by the aim check)
+        // a decloaking weapon (disc, plasma caster, spears...): the cloak off by hand first, the shot next frame
+        CWeapon* cw = ai ? ai->GetCurrentWeaponPtr() : 0;
+        const BARREL* br = cw ? cw->GetBarrelData() : 0;
+        if (br && br->bDecloak && PlayerDecloak(*bot, ai, w->Name.c_str()))
+            return false;
     }
     if (g_cfg.debug)
     {
@@ -7021,8 +7642,8 @@ static void SpendShot(HOBJECT hShooter, CAI* ai, const AIWBM_AIWeapon* w, Bot* b
 
 void BotMgr_OnDamage(HOBJECT hVictim, HOBJECT hDamager, LTFLOAT fDamage, int nType)
 {
-    // the bot's last attacker, for the kill credit (CreditedKiller)
-    if (fDamage > 0.0f && hDamager && hDamager != hVictim && !g_bots.empty() &&
+    // the bot's last attacker, for the kill credit (CreditedKiller); an alien's acid blood is no attack
+    if (fDamage > 0.0f && hDamager && hDamager != hVictim && nType != DT_ACID && !g_bots.empty() &&
         dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hDamager)))
         if (Bot* vb = FindBot(hVictim))
         {
@@ -7195,6 +7816,8 @@ bool BotMgr_AimError(HOBJECT hShooter, HOBJECT hTarget, const LTVector& vFirePos
     if (CCharacter* tc = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hTarget)))
         if (tc->GetCloakState() != CLOAK_STATE_INACTIVE)
             miss = 2.0f * (1.0f - acc);
+    if (miss > 0.0f && BotMgr_StunAnim(hShooter))
+        miss *= g_cfg.stunAim;   // stunned: a player's wobbly view (bots.cfg stunlike)
     if (miss <= 0.0f)
     {
         // the lock follows the target: aim at where it is now (the AI's aim point is a few frames old,
@@ -7357,16 +7980,15 @@ LTFLOAT BotMgr_TrackerBid(CAI* pAI, LTVector* pBlip)
     return kBid;
 }
 
-void BotMgr_HearStep(CCharacter* pSource, int nKind)
+namespace {
+// pSource's noise at 'at', heard within radius by its enemies among the bots (the AI's footstep sense)
+void HearNoise(CCharacter* pSource, const LTVector& at, float radius, const char* kind)
 {
-    if (!g_cfg.hearSteps || !pSource || g_bots.empty() || !g_pGameServerShell->GetGameType().IsMultiplayer())
-        return;
-    const float radius = nKind == BOTHEAR_STEP ? kHearStepRadius : kHearJumpRadius;
     CharFootstepSoundInfo heard;
     const LTFLOAT now = g_pLTServer->GetTime();
     heard.fTime = now;
     heard.fVolume = radius / kHearNoiseDistance;
-    heard.vLocation = pSource->GetPosition();
+    heard.vLocation = at;
     for (size_t i = 0; i < g_bots.size(); ++i)
     {
         Bot& b = g_bots[i];
@@ -7393,12 +8015,93 @@ void BotMgr_HearStep(CCharacter* pSource, int nKind)
         {
             ++b.hearOnsets;
             if (g_cfg.debug)
-                Log("HEAR %s <- %s dist=%.0f kind=%s", b.name.c_str(), ObjectLabel(pSource->m_hObject).c_str(), dist,
-                    nKind == BOTHEAR_STEP ? "step" : nKind == BOTHEAR_JUMP ? "jump" : "land");
+                Log("HEAR %s <- %s dist=%.0f kind=%s", b.name.c_str(), ObjectLabel(pSource->m_hObject).c_str(), dist, kind);
         }
         b.heard[k].t = now;
         b.heard[k].dist = dist;
     }
+}
+} // namespace
+
+void BotMgr_HearStep(CCharacter* pSource, int nKind)
+{
+    if (!g_cfg.hearSteps || !pSource || g_bots.empty() || !g_pGameServerShell->GetGameType().IsMultiplayer())
+        return;
+    HearNoise(pSource, CharPos(pSource), nKind == BOTHEAR_STEP ? kHearStepRadius : kHearJumpRadius,
+              nKind == BOTHEAR_STEP ? "step" : nKind == BOTHEAR_JUMP ? "jump" : "land");
+}
+
+// A window or prop that breaks (CDestructibleModel's death: its debris) plays its debris' explode sound to every client
+// at radius 1000 (CDebrisFX: glass explode_1/2.wav), and players turn to it (players: "I think bots ignore the sound of
+// broken glass and probably other breakable parts of the map. I pounced from distance and my landing broke the window
+// behind which there was a human, and it didn't alert them"). With bots.cfg hearbreak the breaker's enemies among the
+// bots hear it there, as a step of the breaker's (hook 'hearbreak').
+void BotMgr_HearBreak(HOBJECT hBroken, HOBJECT hDamager)
+{
+    if (g_cfg.debug)
+        Log("BREAK %s by %s", ObjectLabel(hBroken).c_str(), ObjectLabel(hDamager).c_str());
+    if (!g_cfg.hearBreak || !hBroken || !hDamager || g_bots.empty() || !g_pGameServerShell->GetGameType().IsMultiplayer())
+        return;
+    CCharacter* src = dynamic_cast<CCharacter*>(g_pLTServer->HandleToObject(hDamager));
+    if (!src || src->IsDead())
+        return;
+    LTVector at;
+    g_pLTServer->GetObjectPos(hBroken, &at);
+    HearNoise(src, at, kHearStepRadius, "break");
+}
+
+// bots.cfg hearshots: CCharacter::SetLastFireInfo tells the AI about every shot only in single player; in multiplayer
+// the bots heard no gunfire, where players hear a fight across the map (each barrel's FireSoundRadius, the client's)
+// and go there. With hearshots every shot reaches the bots' stock weapon-fire sense (hook 'hearshots'), which takes
+// the barrel's sound radius and the shooter's side (CAISenseHearEnemyWeaponFire) and stirs the AI as in single player.
+bool BotMgr_HearShots()
+{
+    return g_cfg.hearShots && !g_bots.empty();
+}
+
+// A shot (hook 'hearshots'): every bot's stock weapon-fire sense hears it; a bot with no target within the barrel's
+// sound radius of an enemy's shot (a mate's too in team games: players run to their mates' fights as well) heads there
+// next, as a player runs to gunfire (BotRoam picks it: BotMgr_ShotDest), at most every kShotGap, for kShotHold.
+namespace {
+const LTFLOAT kShotGap = 6.0f, kShotHold = 12.0f;   // my choices
+}
+
+void BotMgr_HeardShot(CCharacter* pShooter, const CharFireInfo& info)
+{
+    if (!pShooter || g_bots.empty())
+        return;
+    const BARREL* br = g_pWeaponMgr ? g_pWeaponMgr->GetBarrel(info.nBarrelId) : 0;
+    const float radius = br ? br->fFireSoundRadius : 0.0f;
+    const LTFLOAT now = g_pLTServer->GetTime();
+    for (size_t i = 0; i < g_bots.size(); ++i)
+    {
+        Bot& b = g_bots[i];
+        CAI* ai = b.alive ? BotAI(b) : LTNULL;
+        if (!ai || ai == pShooter || ai->IsDead())
+            continue;
+        ai->GetSenseMgr().WeaponFire(info, pShooter);
+        if (radius <= 0.0f || b.stage != 0 || ai->HasTarget() || now < b.shotNext)
+            continue;
+        if ((ai->GetPosition() - info.vFiredPos).MagSqr() > radius * radius || (ai->GetPosition() - info.vFiredPos).MagSqr() < 400.0f * 400.0f)
+            continue;   // out of earshot, or already at the fight
+        b.shotDest = info.vFiredPos;
+        b.shotUntil = now + kShotHold;
+        b.shotNext = now + kShotGap;
+        b.repathNow = true;   // BotRoam picks its next destination now
+        if (g_cfg.debug)
+            Log("HEARSHOT %s <- %s at %.0f away", b.name.c_str(), ObjectLabel(pShooter->m_hObject).c_str(),
+                (ai->GetPosition() - info.vFiredPos).Mag());
+    }
+}
+
+bool BotMgr_ShotDest(CAI* pAI, LTVector* pDest)
+{
+    Bot* b = pAI ? FindBot(pAI->m_hObject) : 0;
+    if (!b || !g_cfg.hearShots || pAI->HasTarget() || g_pLTServer->GetTime() >= b->shotUntil)
+        return false;
+    *pDest = b->shotDest;
+    b->shotUntil = 0.0f;
+    return true;
 }
 
 bool BotMgr_HearSteps()
@@ -7753,6 +8456,30 @@ bool IsFireOrAim(const AIAction* act)
 }
 
 // One frame of combat movement; true when the bot's action animation layer is ours (RunF/RunB).
+// A combat jump carries the bot past its leg's end (its run's momentum in the air), and the leg's own check stops at
+// its end: in prod the jumps added falls (deaths by Crush 0.19 -> 0.27 % of kills, p 0.01, on the pit maps:
+// tds_dm_pod, dm_hanger, dm_alesserfate; test server). No jump unless the floor goes on at the same height along the leg
+// and kJumpCarry beyond it (the graph's nearest waypoint within 40 units and 24 of the start's floor, every 48 units).
+const float kJumpCarry = 96.0f;   // my choice: a running jump's extra distance
+
+bool JumpFloorSafe(CAI* ai, const LTVector& pos, const LTVector& legDest)
+{
+    LTVector d(legDest.x - pos.x, 0.0f, legDest.z - pos.z);
+    const float len = d.Mag();
+    if (len < 1.0f)
+        return false;
+    d /= len;
+    const float floorY = pos.y - ai->GetDims().y;
+    for (float s = 48.0f; s <= len + kJumpCarry; s += 48.0f)
+    {
+        const Vec3 q(pos.x + d.x * s, floorY, pos.z + d.z * s);
+        const int n = g_nav.Nearest(q);
+        if (n < 0 || fabsf(g_nav.Node(n).pos.y - floorY) > 24.0f || avp2bots::DistXZ(g_nav.Node(n).pos, q) > 40.0f)
+            return false;
+    }
+    return true;
+}
+
 bool DriveCombatMove(Bot& b, CAI* ai, LTFLOAT now, float dt, const AIAction* act)
 {
     CombatMove& c = b.cm;
@@ -7868,7 +8595,7 @@ bool DriveCombatMove(Bot& b, CAI* ai, LTFLOAT now, float dt, const AIAction* act
     // also add jumps to their movement"): on a leg long enough for the landing (CheckLeg checked its floor), not at
     // close quarters; the strafe flags below give it its direction
     if (newLeg && g_cfg.combatJump > 0.0f && rel.Mag() >= 160.0f && face.Mag() >= 300.0f &&
-        GetRandom(0.0f, 1.0f) < g_cfg.combatJump)
+        GetRandom(0.0f, 1.0f) < g_cfg.combatJump && JumpFloorSafe(ai, pos, c.legDest))
     {
         ai->Jump();
         c.jumped = true;
@@ -7911,6 +8638,215 @@ bool DriveCombatMove(Bot& b, CAI* ai, LTFLOAT now, float dt, const AIAction* act
 
 } // namespace
 
+// bots.cfg discdodge: players jump aside from a Predator's disc they see coming, at the last moment (players: "Bots
+// should attempt to dodge the pred disk if they see it coming, by jumping sideways at the last moment (bots with heavy
+// weapons should fail at it)"). Each frame of a disc's flight (hook 'discdodge', CPredDisk::Update) a Marine or
+// Predator bot in its line (closest approach within kDodgeMiss, kDodgeLate to kDodgeEarly s away), that faces it
+// (within 60 degrees) and sees it, jumps aside on a strafe leg away from the line (the leg's floor checked), once the
+// disc has flown a person's reaction time; with a heavy weapon (it walks: Smart Gun, SADAR, Minigun) it does not
+// manage. At most one dodge every kDodgeGap.
+namespace {
+const float kDodgeMiss = 48.0f;     // a body's half-width and the disc's
+const float kDodgeEarly = 0.35f, kDodgeLate = 0.1f;   // the last moment (my choice)
+const float kDodgeSeen = 0.25f;     // the disc has flown this long (a person's reaction)
+const float kDodgeLeg = 160.0f;     // a strafe leg's length (CheckLeg's minimum use)
+const LTFLOAT kDodgeGap = 1.5f;
+std::map<HOBJECT, LTFLOAT> g_discSince;   // when each disc in flight was first seen moving
+}
+
+void BotMgr_DiscFlying(HOBJECT hDisc, HOBJECT hThrower, const LTVector& vPos, const LTVector& vVel)
+{
+    if (!g_cfg.discDodge || !hDisc || g_bots.empty() || !g_navLoaded)
+        return;
+    const LTFLOAT now = g_pLTServer->GetTime();
+    std::map<HOBJECT, LTFLOAT>::iterator it = g_discSince.find(hDisc);
+    if (it == g_discSince.end() || now - it->second > 10.0f)
+    {
+        if (g_discSince.size() > 64)
+            g_discSince.clear();
+        g_discSince[hDisc] = now;
+        return;
+    }
+    if (now - it->second < kDodgeSeen)
+        return;
+    const float v2 = vVel.MagSqr();
+    if (v2 < 100.0f * 100.0f)
+        return;
+    for (size_t i = 0; i < g_bots.size(); ++i)
+    {
+        Bot& b = g_bots[i];
+        if (!b.alive || (b.species != BOT_MARINE && b.species != BOT_PREDATOR) || b.stage != 0 || now - b.dodgeAt < kDodgeGap)
+            continue;
+        CAI* ai = BotAI(b);
+        if (!ai || ai->IsDead() || ai->m_hObject == hThrower || b.heavy || ai->IsStunned() || ai->IsNetted())
+            continue;
+        const LTVector pos = ai->GetPosition();
+        const LTVector r = pos - vPos;
+        const float t = r.Dot(vVel) / v2;
+        if (t < kDodgeLate || t > kDodgeEarly)
+            continue;
+        const LTVector miss = r - vVel * t;
+        if (miss.Mag() > kDodgeMiss)
+            continue;
+        // it faces the disc and sees it
+        LTVector toDisc = vPos - pos;
+        toDisc.y = 0.0f;
+        LTVector f = ai->GetForward();
+        f.y = 0.0f;
+        if (toDisc.MagSqr() < 1.0f || f.MagSqr() < 0.01f)
+            continue;
+        toDisc.Norm();
+        f.Norm();
+        if (f.Dot(toDisc) < 0.5f || !ClearLine(pos, vPos))
+            continue;
+        CharacterMovement* cmv = ai->GetMovement();
+        const CharacterMovementState cms = cmv->GetMovementState();
+        if ((cms != CMS_IDLE && cms != CMS_WALKING && cms != CMS_RUNNING) || (cmv->GetControlFlags() & (CM_FLAG_WALLWALK | CM_FLAG_DUCK)))
+            continue;
+        // away from the disc's line (the side the bot already is on), else the other side
+        LTVector side(-vVel.z, 0.0f, vVel.x);
+        side.Norm();
+        if (side.Dot(LTVector(miss.x, 0.0f, miss.z)) < 0.0f)
+            side = -side;
+        const int start = FeetNode(ai);
+        if (start < 0)
+            continue;
+        bool ok = false;
+        for (int k = 0; k < 2 && !ok; ++k)
+        {
+            const LTVector dest = pos + (k ? -side : side) * kDodgeLeg;
+            if (CheckLeg(ai, start, dest, false, dest) == LEG_OK)
+            {
+                CombatMove& c = b.cm;
+                c.legDest = dest;
+                c.hasLeg = true;
+                c.legStart = now;
+                c.legUntil = now + 1.0f;
+                c.pauseUntil = 0.0f;
+                ai->Jump();
+                c.jumped = true;
+                ok = true;
+            }
+        }
+        if (!ok)
+            continue;
+        b.dodgeAt = now;
+        if (g_cfg.debug)
+            Log("DISCDODGE %s from %s's disc, %.2f s from it, miss %.0f", b.name.c_str(), ObjectLabel(hThrower).c_str(), t,
+                miss.Mag());
+    }
+}
+
+// bots.cfg crouchjump: players' Predators and aliens crouch-jump when close to someone, to throw his aim (player:
+// "making the preds and aliens sometimes use the crouch jump when close to someone (real players do that to disorient
+// the opponent)"). A jump from a crouch is the spring jump (CharacterMovementState_Crouch / _WallWalk: the class's
+// SpringJumpSpeed, Runner 1050 against 550; an alien's leaps along its jump direction). A Predator or adult alien bot
+// whose target is in sight within kCjMin-kCjMax crouches for kCjCrouch, then jumps, at crouchjump chances a second,
+// at most once every kCjGap. Set in BotMgr_CombatMove (after the AI's action, before its movement update).
+namespace {
+const float kCjMin = 64.0f, kCjMax = 300.0f;   // close to someone (my choice)
+const LTFLOAT kCjCrouch = 0.2f;                // long enough for the crouch to take (a few frames)
+const LTFLOAT kCjHold = 0.15f;                 // the jump held at most this long
+const LTFLOAT kCjGap = 3.0f;                   // my choice (the players' spring delay is a client variable)
+}
+
+void CrouchJumpUpkeep(Bot& b, CAI* ai, LTFLOAT now, float dt)
+{
+    if (g_cfg.crouchJump <= 0.0f || b.stage != 0 || (b.species != BOT_PREDATOR && b.species != BOT_ALIEN))
+        return;
+    const bool alien = b.species == BOT_ALIEN;
+    if (b.cjCrouchUntil > 0.0f || b.cjJumpUntil > 0.0f)
+    {
+        // crouched (an alien's crouch is its wall-walk mode), then the jump held from it for a few frames (a single
+        // frame's jump flag was mostly missed: the crouch states read it on their own frames)
+        if (alien)
+            ai->WallWalk();
+        else
+            ai->Crouch();
+        if (b.cjCrouchUntil > 0.0f && now >= b.cjCrouchUntil)
+        {
+            b.cjCrouchUntil = 0.0f;
+            b.cjJumpUntil = now + kCjHold;
+            if (g_cfg.debug)
+                Log("CROUCHJUMP %s class=%s", b.name.c_str(), ClassName(b));
+        }
+        if (b.cjJumpUntil > 0.0f)
+        {
+            ai->Jump();
+            const CharacterMovementState js = ai->GetMovement()->GetMovementState();
+            if (now >= b.cjJumpUntil || js == CMS_PRE_JUMPING || js == CMS_STAND_JUMP || js == CMS_WALK_JUMP ||
+                js == CMS_RUN_JUMP || js == CMS_WWALK_JUMP)
+            {
+                b.cjJumpUntil = 0.0f;
+                b.cjNext = now + kCjGap;
+            }
+        }
+        return;
+    }
+    if (now < b.cjNext || !ai->HasTarget() || !ai->GetTarget().IsPartiallyVisible() || ai->IsNetted() || ai->IsStunned())
+        return;
+    CharacterMovement* m = ai->GetMovement();
+    const CharacterMovementState cms = m->GetMovementState();
+    if ((cms != CMS_IDLE && cms != CMS_WALKING && cms != CMS_RUNNING) || !m->IsStandingOn())
+        return;
+    const CCharacter* tc = ai->GetTarget().GetCharacterPtr();
+    if (!tc || tc->IsDead())
+        return;
+    const float d = (CharPos(tc) - ai->GetPosition()).Mag();
+    if (d < kCjMin || d > kCjMax || GetRandom(0.0f, 1.0f) >= g_cfg.crouchJump * dt)
+        return;
+    // the floor goes on toward the target (a spring jump carries far: no jump toward a pit's edge)
+    LTVector ahead = CharPos(tc) - ai->GetPosition();
+    ahead.y = 0.0f;
+    if (ahead.MagSqr() > 1.0f)
+    {
+        ahead.Norm();
+        if (!JumpFloorSafe(ai, ai->GetPosition(), ai->GetPosition() + ahead * 128.0f))
+            return;
+    }
+    b.cjCrouchUntil = now + kCjCrouch;
+}
+
+// bots.cfg stuckjump: a bot running into something (a lip, a pipe, an edge its box catches) kept running in place until
+// its stuck checks removed it (evac_fury151 1885 829 744: running at 313 units/s, not moving, for 18 s; players: "Bots
+// sometimes randomly get stuck running into walls"). A player jumps. A bot that has pushed (speed over 100) for kSjTime
+// without moving kSjMove jumps, the jump held a few frames, at most once every kSjGap.
+namespace {
+const float kSjMove = 12.0f;
+const LTFLOAT kSjTime = 1.0f, kSjHold = 0.15f, kSjGap = 2.0f;   // my choices
+}
+
+void StuckJumpUpkeep(Bot& b, CAI* ai, LTFLOAT now)
+{
+    if (!g_cfg.stuckJump)
+        return;
+    if (b.sjJumpUntil > 0.0f)
+    {
+        ai->Jump();
+        if (now >= b.sjJumpUntil)
+            b.sjJumpUntil = 0.0f;
+        return;
+    }
+    CharacterMovement* m = ai->GetMovement();
+    const CharacterMovementState cms = m->GetMovementState();
+    const LTVector& p = ai->GetPosition();
+    const bool pushing = (cms == CMS_RUNNING || cms == CMS_WALKING || cms == CMS_WALLWALKING) && m->GetVelocity().Mag() > 100.0f &&
+                         !ai->IsNetted() && !ai->IsStunned();
+    if (!pushing || (p - b.sjPos).Mag() > kSjMove || b.sjSince == 0.0f)
+    {
+        b.sjPos = p;
+        b.sjSince = now;
+        return;
+    }
+    if (now - b.sjSince < kSjTime || now < b.sjNext)
+        return;
+    b.sjJumpUntil = now + kSjHold;
+    b.sjNext = now + kSjGap;
+    b.sjSince = now;
+    if (g_cfg.debug)
+        Log("STUCKJUMP %s at %.0f %.0f %.0f", b.name.c_str(), p.x, p.y, p.z);
+}
+
 void BotMgr_CombatMove(CAI* pAI)
 {
     if (!g_navLoaded || !pAI)
@@ -7922,6 +8858,8 @@ void BotMgr_CombatMove(CAI* pAI)
     CombatMove& c = b.cm;
     const LTFLOAT now = g_pLTServer->GetTime();
     float dt = c.lastTime > 0.0f ? (float)(now - c.lastTime) : 0.0f;
+    CrouchJumpUpkeep(b, pAI, now, dt);
+    StuckJumpUpkeep(b, pAI, now);
     if (dt < 0.0f)
         dt = 0.0f;
     if (dt > 0.25f)
@@ -8154,7 +9092,7 @@ void TrafficTick(LTFLOAT now)
         CCharacter* c = *it;
         if (!c || c->IsDead() || IsAlien(c))
             continue;
-        const LTVector& p = c->GetPosition();
+        const LTVector& p = CharPos(c);
         AddTraffic(Vec3(p.x, p.y - c->GetDims().y, p.z), 1.0f);
     }
 }
@@ -8254,7 +9192,7 @@ void CbEnemies(CAI* ai, float range, std::vector<CCharacter*>& out)
             continue;
         if (g_pCharacterMgr->GetRelationship(*ai, *c) != CCharacterMgr::Foe)
             continue;
-        if ((c->GetPosition() - pos).MagSqr() > range * range)
+        if ((CharPos(c) - pos).MagSqr() > range * range)
             continue;
         out.push_back(c);
     }
@@ -8263,7 +9201,7 @@ void CbEnemies(CAI* ai, float range, std::vector<CCharacter*>& out)
 // Can this enemy see the point (a clear line from its eye; characters do not block)?
 bool CbVisible(CCharacter* c, const LTVector& p)
 {
-    LTVector eye = c->GetPosition();
+    LTVector eye = CharPos(c);
     eye.y += c->GetDims().y * 0.8f;
     IntersectQuery q;
     IntersectInfo info;
@@ -8302,11 +9240,11 @@ int CbPickSpot(Bot& b, CAI* ai, const std::vector<CCharacter*>& enemies, float* 
     float nearest = 1e9f;
     for (size_t e = 0; e < enemies.size(); ++e)
     {
-        const float d = (enemies[e]->GetPosition() - pos).Mag();
+        const float d = (CharPos(enemies[e]) - pos).Mag();
         if (d < nearest)
         {
             nearest = d;
-            away = pos - enemies[e]->GetPosition();
+            away = pos - CharPos(enemies[e]);
         }
     }
     away.y = 0.0f;
@@ -8349,7 +9287,7 @@ int CbPickSpot(Bot& b, CAI* ai, const std::vector<CCharacter*>& enemies, float* 
         bool visible = false;
         for (size_t e = 0; e < enemies.size(); ++e)
         {
-            const float d = (enemies[e]->GetPosition() - sp).Mag();
+            const float d = (CharPos(enemies[e]) - sp).Mag();
             if (d < dmin)
                 dmin = d;
             if (!visible && d < 2500.0f && CbVisible(enemies[e], sp))
@@ -8432,7 +9370,7 @@ int BotMgr_CbHide(CAI* pAI, bool following, bool pathDone, LTVector* pDest)
         bool seen = false, spotTaken = false;
         for (size_t e = 0; e < enemies.size(); ++e)
         {
-            const LTVector ep = enemies[e]->GetPosition();
+            const LTVector ep = CharPos(enemies[e]);
             const float d = (ep - pos).Mag();
             if (!CbVisible(enemies[e], pos))
                 continue;
@@ -8718,6 +9656,21 @@ float PounceReach(float speed)
     return half > 1.0f ? speed * speed * sinf(2.0f * kPounceLiftDeg * 3.14159265f / 180.0f) / half : 0.0f;
 }
 
+// the character's body faces p, seen from above, within kPounceFacing (a pounce goes along the view)
+const float kPounceFacing = 0.766f;    // cos 40 degrees (my choice: a zig-zag leg runs 30 degrees off the target)
+bool FacesXZ(const CCharacter* c, const LTVector& p)
+{
+    LTVector f = c->GetForward();
+    LTVector to = p - CharPos(c);
+    f.y = 0.0f;
+    to.y = 0.0f;
+    if (f.MagSqr() < 0.0001f || to.MagSqr() < 1.0f)
+        return true;
+    f.Norm();
+    to.Norm();
+    return f.Dot(to) >= kPounceFacing;
+}
+
 // the bots' sight reaction (RegisterAllWeapons): 0.2 s within 400 units, rising to 1 s at 2000
 float ReactionTime(float dist)
 {
@@ -8751,6 +9704,10 @@ bool BotMgr_PounceRule(CAI* pAI)
     return b && b->species == BOT_ALIEN && b->stage == 0;
 }
 
+namespace {
+bool FlightBlocked(CAI* pAI, const LTVector& aim, float speed);   // (with the pounce flight, below)
+}
+
 bool BotMgr_PounceNow(CAI* pAI)
 {
     Bot* b = pAI ? FindBot(pAI->m_hObject) : 0;
@@ -8764,6 +9721,7 @@ bool BotMgr_PounceNow(CAI* pAI)
     const float speed = pAI->GetButes() ? pAI->GetButes()->m_fBasePounceSpeed : 0.0f;
     const float reach = PounceReach(speed);
     float dist = 0.0f;
+    LTVector aim(0.0f, 0.0f, 0.0f);
     if (now < b->pounceReadyAt)
         why = "cooldown";
     else if (!tc || tc->IsDead() || speed <= 0.0f)
@@ -8774,7 +9732,7 @@ bool BotMgr_PounceNow(CAI* pAI)
     {
         // where the AI's pounce goes: the target's chest, led by its speed over the flight (Character.cpp MID_FORCE_POUNCE)
         const LTVector& p = pAI->GetPosition();
-        LTVector aim = tc->GetPosition() + tc->GetChestOffset();
+        aim = CharPos(tc) + tc->GetChestOffset();
         dist = (aim - p).Mag();
         aim += tc->GetMovement()->GetVelocity() * (dist / speed * 1.1f);
         const float clawReach = b->kitClawsBarrel ? (float)b->kitClawsBarrel->nRange : 150.0f;
@@ -8804,6 +9762,23 @@ bool BotMgr_PounceNow(CAI* pAI)
         b->pounceSeenSince = now;
     if (now - b->pounceSeenSince < ReactionTime(dist))
         return false;
+    // and the body faces the target: a player's pounce goes along his view, the AI's went at the target whichever way
+    // it faced (players: "aliens that have their back turned to you can sometimes immediately change direction and
+    // pounce without turning first"). On the ground only (a wall's forward is not the view). The AI turns meanwhile.
+    if (cms != CMS_WALLWALKING && !FacesXZ(pAI, CharPos(tc)))
+        return false;
+    // and a player's flight there is not stopped by the ground first (a ramp or a wall beside the bot); traced only now,
+    // once everything else holds (it costs a flight trace)
+    if (g_cfg.pounceFlight && FlightBlocked(pAI, aim, speed))
+    {
+        if (g_cfg.debug && now >= b->pounceBlockLogAt)
+        {
+            Log("POUNCETERRAIN %s class=%s -> %s dist=%.0f: the flight meets the ground first", b->name.c_str(), ClassName(*b),
+                ObjectLabel(t.GetObject()).c_str(), dist);
+            b->pounceBlockLogAt = now + 2.0f;
+        }
+        return false;
+    }
     b->pounceDecision = dist;
     b->pounceWaited = (float)(now - b->pounceSeenSince);
     return true;
@@ -8816,6 +9791,7 @@ void BotMgr_PounceStarted(CAI* pAI)
         return;
     b->pounceReadyAt = g_pLTServer->GetTime() + kPounceCooldown;
     b->pounceSeenSince = 0.0f;
+    b->travelPending = false;   // this pounce goes at the target
     if (g_cfg.debug)
     {
         const float speed = pAI->GetButes() ? pAI->GetButes()->m_fBasePounceSpeed : 0.0f;
@@ -8881,6 +9857,62 @@ bool FlightImpact(LTVector p, LTVector v, const LTVector& a, LTVector* hit, LTVe
     return false;
 }
 
+// A player's pounce launch (CharacterMovementState_Pre_PounceJump): along the view toward dir, lifted by 15 degrees x
+// (1 - the view's upward part); a view below the horizon launches level along the forward.
+bool PlayerPounceVelocity(LTVector dir, LTVector up, float speed, LTVector* vel, float* liftDeg)
+{
+    if (speed <= 0.0f || dir.MagSqr() < 1.0f)
+        return false;
+    dir.Norm();
+    if (up.MagSqr() < 0.01f)
+        up = LTVector(0.0f, 1.0f, 0.0f);
+    up.Norm();
+    float ud = dir.Dot(up);
+    if (ud > 1.0f)
+        ud = 1.0f;
+    if (ud < 0.0f)
+    {
+        ud = 0.0f;
+        dir -= up * dir.Dot(up);
+        if (dir.MagSqr() < 0.0001f)
+            return false;
+        dir.Norm();
+    }
+    LTVector side = up - dir * dir.Dot(up);
+    LTVector launch = dir;
+    if (side.MagSqr() > 0.0001f)
+    {
+        side.Norm();
+        const float a = (1.0f - ud) * kPounceLiftDeg * 3.14159265f / 180.0f;
+        launch = dir * cosf(a) + side * sinf(a);
+    }
+    *vel = launch * speed;
+    if (liftDeg)
+        *liftDeg = (1.0f - ud) * kPounceLiftDeg;
+    return true;
+}
+
+// The flight a player's pounce toward aim would fly (as BotMgr_PounceFlight launches it), traced from 8 units above the
+// bottom of the pounce box: true when it meets the world well short of the target. A steep ramp or a wall beside the
+// bot ended such pounces at once (a pounce test on dm_compound, under Wine); a player would not pounce there.
+bool FlightBlocked(CAI* pAI, const LTVector& aim, float speed)
+{
+    CharacterMovement* m = pAI->GetMovement();
+    if (m->GetMovementState() == CMS_WALLWALKING)
+        return false;   // the box's bottom is not below it on a wall
+    const LTVector pd = m->GetDimsSetting(CM_DIMS_POUNCING);
+    const LTVector up(0.0f, 1.0f, 0.0f);
+    const LTVector start = pAI->GetPosition() + up * ((pd.y - pAI->GetDims().y) * 1.1f);   // as MID_FORCE_POUNCE
+    LTVector vel;
+    if (!PlayerPounceVelocity(aim - start, up, speed, &vel, 0))
+        return false;
+    LTVector hit, normal;
+    if (!FlightImpact(start - up * (pd.y - 8.0f), vel, HalfGravity(), &hit, &normal))
+        return false;
+    const float tx = aim.x - start.x, tz = aim.z - start.z, hx = hit.x - start.x, hz = hit.z - start.z;
+    return sqrtf(hx * hx + hz * hz) < sqrtf(tx * tx + tz * tz) - 64.0f && (hit - aim).Mag() > 96.0f;
+}
+
 // the floor a missed flight ends on: the hit itself on a floor, else straight below a wall or ceiling hit; on the graph?
 bool LandingOnGraph(const LTVector& hit, const LTVector& normal, LTVector* floor)
 {
@@ -8938,41 +9970,16 @@ bool BotMgr_PounceFlight(CharacterMovement* m)
         b->flightStamp = cv->m_fStampTime;
         b->flightPlayer = false;
         const float speed = m->GetCharacterButes()->m_fBasePounceSpeed;
-        LTVector dir = cv->m_vDestination - cv->m_vStart;
-        if (speed <= 0.0f || dir.MagSqr() < 1.0f)
+        LTVector vel;
+        float lift = 0.0f;
+        if (!PlayerPounceVelocity(cv->m_vDestination - cv->m_vStart, cv->m_vUp, speed, &vel, &lift))
             return false;
-        dir.Norm();
-        LTVector up = cv->m_vUp;
-        if (up.MagSqr() < 0.01f)
-            up = LTVector(0.0f, 1.0f, 0.0f);
-        up.Norm();
-        float ud = dir.Dot(up);
-        if (ud > 1.0f)
-            ud = 1.0f;
-        if (ud < 0.0f)
-        {
-            // a view below the horizon launches level (Pre_PounceJump uses the character's forward)
-            ud = 0.0f;
-            dir -= up * dir.Dot(up);
-            if (dir.MagSqr() < 0.0001f)
-                return false;
-            dir.Norm();
-        }
-        LTVector side = up - dir * dir.Dot(up);
-        LTVector launch = dir;
-        if (side.MagSqr() > 0.0001f)
-        {
-            side.Norm();
-            const float a = (1.0f - ud) * 15.0f * 3.14159265f / 180.0f;
-            launch = dir * cosf(a) + side * sinf(a);
-        }
-        const LTVector vel = launch * speed;
         LTVector hit, normal, floor;
         const bool lands = FlightImpact(cv->m_vPos, vel, HalfGravity(), &hit, &normal);
         const bool safe = lands && LandingOnGraph(hit, normal, &floor);
         if (g_cfg.debug)
             Log("POUNCEFLIGHT %s class=%s mode=%s lift=%.1f miss_lands=%.0f %.0f %.0f%s", b->name.c_str(), ClassName(*b),
-                safe ? "player" : "ai", (1.0f - ud) * 15.0f, lands ? floor.x : 0.0f, lands ? floor.y : 0.0f,
+                safe ? "player" : "ai", lift, lands ? floor.x : 0.0f, lands ? floor.y : 0.0f,
                 lands ? floor.z : 0.0f, !lands ? " (nothing within 3 s)" : (safe ? "" : " (off the graph)"));
         if (!safe)
             return false;
@@ -9026,6 +10033,232 @@ bool BotMgr_PounceFlight(CharacterMovement* m)
     return true;
 }
 
+// The touch rule of a player's pounce at its launch (part of bots.cfg pounceflight, hook 'pouncelaunchtouch'):
+// MID_FORCE_POUNCE puts the AI in its pounce state and moves it with no velocity yet, and the AI's touch rule
+// (CharacterMovementState_Pouncing_TN) ends a pounce on any solid contact that is not behind its motion, which a zero
+// velocity cannot tell: the ground the bot stands on ended it. On dm_compound (ground of world models) 109 of 117 bot
+// pounces ended so without leaving the ground (2026-11-26; 2 to 14 % on other maps). A player's pounce has
+// its launch velocity from the start, so the ground it leaves is behind its motion and ignored (Pounce_Jump_TN). Until
+// a bot's flight has its velocity, contacts with anything but a character are ignored; then the stock rule applies.
+bool BotMgr_PounceTouchIgnored(CharacterMovement* m, CollisionInfo* pInfo)
+{
+    if (!g_cfg.pounceFlight || !m || !pInfo)
+        return false;
+    Bot* b = FindBot(m->GetObject());
+    if (!b || b->species != BOT_ALIEN)
+        return false;
+    CharacterVars* cv = m->GetCharacterVars();
+    if (cv->m_fStampTime == -1.0f)
+        return false;   // the pounce has already ended
+    // the launch: BotMgr_PounceFlight has not seen this pounce yet, or has not given it its velocity yet (its change to
+    // the pounce dims touches the ground first: 12 of 12 contacts on dm_compound came then, all with no velocity)
+    const bool launching = cv->m_fStampTime != b->flightStamp || cv->m_vVelocity.MagSqr() < 1.0f;
+    BaseClass* o = pInfo->m_hObject ? g_pLTServer->HandleToObject(pInfo->m_hObject) : 0;
+    const bool character = o && (dynamic_cast<CCharacter*>(o) || dynamic_cast<CCharacterHitBox*>(o));
+    // and, the whole flight, a surface the flight is leaving (its normal along the motion): the stock rule checks that
+    // only for contacts with a poly; the world-model ground of maps such as Compound gave none, and a pounce launched
+    // from a slope ended on it (a pounce test, under Wine: normal 0.45 0.89 0, dot +348)
+    const bool leaving = pInfo->m_Plane.m_Normal.Dot(cv->m_vVelocity) > 0.0f;
+    const bool ignore = !character && (launching || leaving);
+    if (g_cfg.debug && !character)
+    {
+        // the first contacts of each pounce with the world (diagnostics)
+        if (b->touchStamp != cv->m_fStampTime)
+        {
+            b->touchStamp = cv->m_fStampTime;
+            b->touchLogs = 0;
+        }
+        const LTFLOAT since = g_pLTServer->GetTime() - cv->m_fStampTime;
+        if (b->touchLogs < 4 && since < 0.3f)
+        {
+            ++b->touchLogs;
+            const LTVector& n = pInfo->m_Plane.m_Normal;
+            const LTVector& v = cv->m_vVelocity;
+            Log("POUNCETOUCH %s %s type=%d poly=%d normal=%.2f %.2f %.2f vel=%.0f %.0f %.0f since=%.2f %s",
+                b->name.c_str(), ObjectLabel(pInfo->m_hObject).c_str(),
+                pInfo->m_hObject ? (int)g_pLTServer->GetObjectType(pInfo->m_hObject) : -1,
+                pInfo->m_hPoly != INVALID_HPOLY ? 1 : 0, n.x, n.y, n.z, v.x, v.y, v.z, since,
+                ignore ? (launching ? "ignored (launch)" : "ignored (left behind)") : "stock rule");
+        }
+    }
+    return ignore;
+}
+
+// --- travel pounce (bots.cfg 'travelpounce') --------------------------------------------------------------------
+// Alien players cross open ground by pouncing (players: "on large open maps alien players quickly travel across the
+// map and close the distance to opponents by using the pounce"): the flight goes at the class's PounceSpeed (1100 to
+// 1400 units/s against a run of 410 to 510), once per pounce delay (2 s). An adult alien bot running along its path
+// pounces ahead when its pounce is ready and a player's flight launched level along the path (lifted 15 degrees, half
+// gravity, as BotMgr_PounceFlight flies it) comes down on a floor, on the graph, close to the path, at least
+// kTravelMin away and short of the path's end or of a special step (climb, jump, ladder, crawl); every waypoint it
+// flies over lies close to the flight's line (the path runs straight). Those waypoints are dropped. Not with an enemy
+// in sight within pounce reach: the attack goal's pounce decides then (BotMgr_PounceNow). The decision is taken in
+// the path following (hook 'travelpounce', CAIStrategyFollowPath::UpdateMoveTo); the stock pounce action launches it
+// toward the point instead of the target (BotMgr_TravelPounceLaunch, hook 'travelpouncelaunch').
+namespace {
+const float kTravelMin = 320.0f;   // shortest flight worth it (about 0.6 s of a Runner's run; my choice)
+const float kTravelLine = 48.0f;   // the waypoints flown over lie this close to the flight's line (my choice)
+const float kTravelLand = 64.0f;   // the landing lies this close to the path (my choice)
+int g_travelPounces = 0;
+
+float LenXZ(const LTVector& a, const LTVector& b)
+{
+    const float dx = b.x - a.x, dz = b.z - a.z;
+    return sqrtf(dx * dx + dz * dz);
+}
+
+// distance from p to the segment a-b, seen from above; *t = where along it (0..1)
+float DistXZToSegment(const LTVector& p, const LTVector& a, const LTVector& b, float* t)
+{
+    const float dx = b.x - a.x, dz = b.z - a.z;
+    const float len2 = dx * dx + dz * dz;
+    float u = len2 > 0.0001f ? ((p.x - a.x) * dx + (p.z - a.z) * dz) / len2 : 0.0f;
+    u = u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u);
+    *t = u;
+    const float ex = a.x + dx * u - p.x, ez = a.z + dz * u - p.z;
+    return sqrtf(ex * ex + ez * ez);
+}
+} // namespace
+
+bool BotMgr_TravelPounce(CAI* pAI, const CAIPathWaypoint& current, CAIPath& path)
+{
+    if (!g_cfg.travelPounce || !g_navLoaded || !pAI)
+        return false;
+    Bot* b = FindBot(pAI->m_hObject);
+    if (!b || b->species != BOT_ALIEN || b->stage != 0)
+        return false;
+    const LTFLOAT now = g_pLTServer->GetTime();
+    if (now < b->pounceReadyAt || now < b->travelCheckAt)
+        return false;
+    b->travelCheckAt = now + 0.25f;   // four checks a second (each one traces a flight)
+    if (current.GetInstruction() != CAIPathWaypoint::eInstructionMoveTo || !pAI->CanDoNewAction())
+        return false;
+    CharacterMovement* m = pAI->GetMovement();
+    const float speed = m->GetCharacterButes()->m_fBasePounceSpeed;
+    if (speed <= 0.0f || m->GetMovementState() != CMS_RUNNING || !m->IsStandingOn() ||
+        (m->GetControlFlags() & CM_FLAG_WALLWALK) || pAI->GetInjuredMovement() || pAI->IsNetted())
+        return false;
+    const float reach = PounceReach(speed);
+    const LTVector pos = pAI->GetPosition();
+    if (pAI->HasTarget() && pAI->GetTarget().IsPartiallyVisible())
+    {
+        LTVector tp;
+        g_pLTServer->GetObjectPos(pAI->GetTarget().GetObject(), &tp);
+        if ((tp - pos).Mag() <= reach + 200.0f)
+            return false;
+    }
+
+    // the path ahead on the floor: the bot, the waypoint it runs to, then the MoveTos that follow (up to a special
+    // step, which is never flown over: the last MoveTo before it is the limit, as the path's end is)
+    const LTVector& dims = pAI->GetDims();
+    const LTVector down(0.0f, dims.y, 0.0f);   // MoveTo waypoints sit at the AI's centre height
+    std::vector<LTVector> poly;
+    std::vector<float> arc;
+    poly.push_back(pos - down);
+    arc.push_back(0.0f);
+    poly.push_back(current.GetArgumentPosition() - down);
+    arc.push_back(LenXZ(poly[0], poly[1]));
+    const CAIPath& cpath = path;   // (the non-const EndWaypoints() of the stock CAIPath returns begin())
+    for (CAIPath::const_WaypointIterator it = cpath.BeginWaypoints(); it != cpath.EndWaypoints(); ++it)
+    {
+        if (it->GetInstruction() != CAIPathWaypoint::eInstructionMoveTo || arc.back() > reach + 400.0f)
+            break;
+        poly.push_back(it->GetArgumentPosition() - down);
+        arc.push_back(arc.back() + LenXZ(poly[poly.size() - 2], poly.back()));
+    }
+    const float usable = arc.back() - 32.0f;
+    if (usable < kTravelMin)
+        return false;
+
+    // launched level toward the path point a flight on flat ground would reach, lifted as a player's
+    const float aimArc = reach < usable ? reach : usable;
+    size_t k = 1;
+    while (k + 1 < poly.size() && arc[k] < aimArc)
+        ++k;
+    const float seg = arc[k] - arc[k - 1];
+    const LTVector aim = poly[k - 1] + (poly[k] - poly[k - 1]) * (seg > 0.001f ? (aimArc - arc[k - 1]) / seg : 1.0f);
+    LTVector dir(aim.x - pos.x, 0.0f, aim.z - pos.z);
+    if (dir.MagSqr() < 1.0f)
+        return false;
+    dir.Norm();
+    const float lift = kPounceLiftDeg * 3.14159265f / 180.0f;
+    const LTVector vel = (dir * cosf(lift) + LTVector(0.0f, 1.0f, 0.0f) * sinf(lift)) * speed;
+    const LTVector pd = m->GetDimsSetting(CM_DIMS_POUNCING);
+    const LTVector start = pos + LTVector(0.0f, (pd.y - dims.y) * 1.1f, 0.0f);   // as MID_FORCE_POUNCE
+    LTVector hit, normal, floor;
+    if (!FlightImpact(start, vel, HalfGravity(), &hit, &normal) || normal.y < 0.7f || !LandingOnGraph(hit, normal, &floor))
+        return false;
+
+    // the landing: on the path's floor, far enough, short of its limit; and the path runs along the flight's line
+    float best = 1e9f, sLand = 0.0f, floorAt = 0.0f;
+    for (size_t i = 1; i < poly.size(); ++i)
+    {
+        float t;
+        const float d = DistXZToSegment(hit, poly[i - 1], poly[i], &t);
+        if (d < best)
+        {
+            best = d;
+            sLand = arc[i - 1] + t * (arc[i] - arc[i - 1]);
+            floorAt = poly[i - 1].y + t * (poly[i].y - poly[i - 1].y);
+        }
+    }
+    if (best > kTravelLand || sLand < kTravelMin || sLand > usable || fabsf(hit.y - floorAt) > 48.0f)
+        return false;
+    for (size_t i = 1; i < poly.size() && arc[i] < sLand; ++i)
+    {
+        float t;
+        if (DistXZToSegment(poly[i], pos, hit, &t) > kTravelLine)
+            return false;
+    }
+
+    if (!pAI->SetNextAction(CAI::ACTION_POUNCE))
+        return false;
+    b->travelPending = true;
+    b->travelDest = start + dir * LenXZ(pos, hit);
+    b->pounceReadyAt = now + kPounceCooldown;
+    b->pounceSeenSince = 0.0f;
+    // the waypoints flown over go; the caller drops the current one, so it is put back when the flight ends short of it
+    int dropped = 0;
+    for (size_t i = 2; i < poly.size() && arc[i] < sLand; ++i, ++dropped)
+        path.IncrementWaypointIndex();
+    if (arc[1] >= sLand)
+        path.AddWaypoint(current);
+    else
+        ++dropped;
+    ++g_travelPounces;
+    if (g_cfg.debug)
+        Log("TRAVELPOUNCE %s class=%s flight=%.0f reach=%.0f path_ahead=%.0f dropped=%d from=%.0f %.0f %.0f lands=%.0f %.0f %.0f",
+            b->name.c_str(), ClassName(*b), sLand, reach, arc.back(), dropped, pos.x, pos.y - dims.y, pos.z, hit.x, hit.y,
+            hit.z);
+    return true;
+}
+
+bool BotMgr_TravelPounceLaunch(CAI* pAI)
+{
+    Bot* b = pAI ? FindBot(pAI->m_hObject) : 0;
+    if (!b || !b->travelPending)
+        return false;
+    b->travelPending = false;
+    // MID_FORCE_POUNCE's setup, toward the point: from the ground or a wall only (otherwise the action ends at once)
+    CharacterMovement* m = pAI->GetMovement();
+    if (!(m->IsStandingOn() || m->GetMovementState() == CMS_WALLWALKING))
+        return true;
+    LTVector start = pAI->GetPosition();
+    const LTVector pd = m->GetDimsSetting(CM_DIMS_POUNCING);
+    start += pAI->GetUp() * ((pd.y - pAI->GetDims().y) * 1.1f);
+    LTVector dest = b->travelDest;
+    dest.y = start.y;   // level: BotMgr_PounceFlight lifts it by 15 degrees, as a player's level view
+    m->SetStart(start);
+    m->SetDestination(dest, m->GetRot());
+    m->SetTimeStamp(g_pLTServer->GetTime());
+    const LTVector zero(0.0f, 0.0f, 0.0f);
+    m->SetVelocity(zero);
+    m->SetAcceleration(zero);
+    m->SetMovementState(CMS_POUNCING);
+    m->SetPos(start);   // after the state, so that a touch from the move is a pounce's touch (as MID_FORCE_POUNCE)
+    return true;
+}
+
 // --- facehuggers (lifecycle) ------------------------------------------------------------------------------------
 // A facehugger player (Facehugger_MP: 25 hp, runs at 550, PounceSpeed 1000, walks on walls) leaps with either fire
 // button (CGameClientShell: COMMAND_ID_FIRING / ALT_FIRING force HandlePounceJump for a facehugger): the adults'
@@ -9053,7 +10286,7 @@ bool Huggable(const CCharacter* c)
 // the character looks at p (within its half view of 45 degrees: a 90 degree view, a player's default field of view)
 bool LooksAt(const CCharacter* c, const LTVector& p)
 {
-    LTVector to = p - c->GetPosition();
+    LTVector to = p - CharPos(c);
     to.y = 0.0f;
     LTVector f = c->GetForward();
     f.y = 0.0f;
@@ -9072,7 +10305,7 @@ bool HasCompany(const CCharacter* victim, const CCharacter* hugger, float reach)
         const CCharacter* o = *it;
         if (!o || o == victim || o == hugger || o->IsDead() || IsAlien(o))
             continue;
-        if ((o->GetPosition() - victim->GetPosition()).MagSqr() < reach * reach)
+        if ((CharPos(o) - CharPos(victim)).MagSqr() < reach * reach)
             return true;
     }
     return false;
@@ -9089,7 +10322,7 @@ bool HugAvoid(const Bot& b, CAI* ai, const CCharacter* victim)
     if (!g_cfg.hugLike || b.stage != 1 || !Huggable(victim))
         return false;
     const float reach = HugReach(ai);
-    if ((victim->GetPosition() - ai->GetPosition()).MagSqr() <= reach * reach)
+    if ((CharPos(victim) - ai->GetPosition()).MagSqr() <= reach * reach)
         return false;
     return LooksAt(victim, ai->GetPosition()) && HasCompany(victim, ai, reach);
 }
@@ -9121,7 +10354,7 @@ void HugHunt(Bot& b, CAI* ai, LTFLOAT now)
         CCharacter* v = *it;
         if (!Huggable(v) || v == ai || g_pCharacterMgr->GetRelationship(*ai, *v) != CCharacterMgr::Foe)
             continue;
-        const LTVector chest = v->GetPosition() + v->GetChestOffset();
+        const LTVector chest = CharPos(v) + v->GetChestOffset();
         const float d = (chest - p).Mag();
         IntersectInfo ii;
         if (d > kHugSight || FlightSegment(p, chest, &ii))
@@ -9181,7 +10414,7 @@ bool BotMgr_HugNow(CAI* pAI)
     {
         // the AI's leap aims at the target's chest led by its speed (Character.cpp MID_FORCE_FACEHUG)
         const LTVector& p = pAI->GetPosition();
-        LTVector aim = tc->GetPosition() + tc->GetChestOffset();
+        LTVector aim = CharPos(tc) + tc->GetChestOffset();
         dist = (aim - p).Mag();
         aim += tc->GetMovement()->GetVelocity() * (dist / speed * 1.1f);
         if (dist > reach)
@@ -9228,6 +10461,69 @@ void BotMgr_HugStarted(CAI* pAI)
     }
 }
 
+// A drop the game does not have: the graph saw a floor's edge where the world goes on (a grating, a ledge wider than
+// its collision), so a bot walked the lower floor's waypoints on the upper one (a MoveTo ignores height) into a wall:
+// dm_bunker -407 568 -2991, the drop at -719 288 -3064 (prod: on four servers). When the bot's move goes on from one of
+// its path's drop landings (the path counted it reached) while the bot stands on the ground 64 or more above it, that
+// drop is blocked for the map, with the drops of the same edge (96 units), and the bot picks a new way
+// (BotMgr_TakeRepath).
+void FakeDropUpkeep(Bot& b, CAI* ai)
+{
+    if (b.drops.empty())
+        return;
+    const CAIStrategyMove* mv = ai->GetMovePtr();
+    if (!mv)
+        return;
+    const LTVector& md = mv->BotGetDest();
+    const Vec3 dest(md.x, md.y, md.z);
+    int heading = -1;
+    for (size_t i = 0; i < b.drops.size() && heading < 0; ++i)
+        if (avp2bots::DistXZ(dest, b.drops[i].second) < 8.0f)
+            heading = (int)i;
+    const int was = b.dropWatch;
+    b.dropWatch = heading;
+    if (was < 0 || heading == was || was >= (int)b.drops.size())
+        return;
+    // the move has left landing 'was' behind: did the bot get down?
+    CharacterMovement* m = ai->GetMovement();
+    const CharacterMovementState cms = m->GetMovementState();
+    if (!m->IsStandingOn() || (cms != CMS_IDLE && cms != CMS_WALKING && cms != CMS_RUNNING))
+        return;
+    const LTVector& p = ai->GetPosition();
+    const Vec3 feet(p.x, p.y - ai->GetDims().y, p.z);
+    {
+        const size_t i = (size_t)was;
+        const Vec3& land = b.drops[i].second;
+        if (avp2bots::DistXZ(feet, land) < 64.0f && feet.y > land.y + 64.0f)
+        {
+            const int n = g_nav.BlockDropsNear(b.drops[i].first, 96.0f);   // the same edge: its neighbouring drops too
+            Log("FAKEDROP %s stands at %.0f %.0f %.0f above the landing %.0f %.0f %.0f: %d drop link(s) blocked for this map",
+                b.name.c_str(), feet.x, feet.y, feet.z, land.x, land.y, land.z, n);
+            b.drops.clear();
+            b.repathNow = true;
+            g_pathFails.clear();
+            return;
+        }
+    }
+}
+
+bool BotMgr_TakeRepath(CAI* pAI)
+{
+    Bot* b = pAI ? FindBot(pAI->m_hObject) : 0;
+    if (!b || !b->repathNow)
+        return false;
+    b->repathNow = false;
+    return true;
+}
+
+bool BotMgr_KillMove(CAI* pAI)
+{
+    if (!g_cfg.killMove || !pAI || pAI->HasTarget())
+        return false;
+    const Bot* b = FindBot(pAI->m_hObject);
+    return b && b->stage == 0 && g_pLTServer->GetTime() < b->killMoveUntil;
+}
+
 bool BotMgr_HugRoam(CAI* pAI)
 {
     // a bot facehugger with no victim keeps moving (the attack goal would stand and wait 5-12 s)
@@ -9245,6 +10541,45 @@ bool BotMgr_HugRoam(CAI* pAI)
 BotNav* BotMgr_GetNav()
 {
     return g_navLoaded ? &g_nav : 0;
+}
+
+namespace {
+// bots.cfg wallrun: alien players run on walls ("runner should use as much wallwalk and walls as possible, in multiplayer
+// runners walking on ground are very easy targets"; "aliens pounce from walls"). The graph has floor waypoints only.
+// For a Runner bot, a straight stretch of its path's plain floor steps (kWallRunMin or longer, every step within 20
+// degrees of the stretch) beside a flat wall (side rays every 64 units at kWallRunH and kWallRunH + 64 above the floor
+// meet the same vertical plane within kWallRunReach on one side) becomes: onto the wall at kWallRunH, along it, and
+// back down to the stretch's last floor point (WallWalkTo with the wall's normal, as the climbs). One stretch a path.
+const float kWallRunMin = 256.0f;
+const float kWallRunH = 96.0f;       // above a standing Marine's waist (my choice)
+const float kWallRunReach = 128.0f;  // the wall within this of the floor way (my choice)
+
+// the wall beside floor point f on the side 'side' (horizontal unit): its point at height h, and its normal
+bool WallBeside(const Vec3& f, const LTVector& side, float h, LTVector* at, LTVector* normal)
+{
+    IntersectQuery q;
+    IntersectInfo info;
+    q.m_From = LTVector(f.x, f.y + h, f.z);
+    q.m_To = q.m_From + side * kWallRunReach;
+    q.m_Flags = IGNORE_NONSOLID;
+    if (!g_pLTServer->IntersectSegment(&q, &info))
+        return false;
+    const LTVector n = info.m_Plane.m_Normal;
+    if (fabsf(n.y) > 0.15f || n.Dot(side) > -0.9f)
+        return false;   // not a vertical wall facing the way
+    *at = info.m_Point;
+    *normal = n;
+    return true;
+}
+}
+
+namespace {
+// Predalien stance switching (bots.cfg stance, see BotMgr_FindPath); values my choice (no measurement of players)
+const float kStancePeriod = 1.0f;     // one crouch-and-stand cycle (s)
+const float kStanceCrouch = 0.5f;     // the crouched share of it
+const float kStanceSpeed = 300.0f;    // to time the steps: between crouched-running (260) and running (350)
+const float kStanceRange = 600.0f;    // path length shaped (the path is recomputed about every 0.6 s while chasing)
+const float kStanceMaxDist = 2000.0f; // farther, a gun's spread makes the head no special target
 }
 
 LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
@@ -9377,7 +10712,40 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
     };
     std::vector<Step> steps;
     float prevFloor = p.y - dims.y;
-    int ladders = 0, climbs = 0, crawls = 0;
+    int ladders = 0, climbs = 0, crawls = 0, stanced = 0;
+    std::vector<size_t> ladderAt;   // the path's LadderTo steps and their ladders' portals
+    std::vector<std::pair<Vec3, Vec3> > pathDrops;   // its drops: portal, landing (FakeDropUpkeep)
+    std::vector<Vec3> ladderPortal;
+
+    // Predalien stance (bots.cfg stance): a Predalien player in sight of an enemy with a gun goes from crouching to
+    // standing and back as it closes in, which keeps its head (a very weak spot) hard to hit (players: "predalien
+    // should change stances from crouch to stand to make it's very vulnerable head harder to hit, especially when it
+    // sees you with distance weapons, before closing the distance with pounce"). A crouched alien is in wall-walk mode,
+    // a cube of half its height, at twice its crouch speed when running (260 for a Predalien, 350 standing). While its
+    // target (not an alien) is in sight, faces it and is beyond its claws, the walk steps of a Predalien bot's path
+    // within kStanceRange are crouched (as a crawl) when the bot should reach them during the crouched part of a
+    // kStancePeriod rhythm (the time from the distance at kStanceSpeed; each bot has its own phase), standing otherwise.
+    float stancePhase = -1.0f;   // < 0: no stance switching on this path
+    float stanceArc = 0.0f;      // path length up to the step being built
+    Vec3 stancePrev(p.x, p.y - dims.y, p.z);
+    if (g_cfg.stance && g_cfg.wallwalk && alien && !ambush && pAI->HasTarget() &&
+        pAI->GetMovement()->GetCharacterButes()->m_bWallWalk)
+    {
+        const Bot* sb = FindBot(pAI->m_hObject);
+        const CAITarget& t = pAI->GetTarget();
+        const CCharacter* tc = t.GetCharacterPtr();
+        if (sb && sb->species == BOT_ALIEN && sb->stage == 0 && !strcmp(ClassName(*sb), "Predalien") && tc &&
+            !IsAlien(tc) && t.IsPartiallyVisible() && t.IsFacing())
+        {
+            LTVector tp;
+            g_pLTServer->GetObjectPos(t.GetObject(), &tp);
+            const float d = (tp - p).Mag();
+            const float claws = sb->kitClawsBarrel ? (float)sb->kitClawsBarrel->nRange : 150.0f;
+            if (d > claws + 64.0f && d < kStanceMaxDist)
+                stancePhase = fmodf((float)now + (float)(((unsigned long)pAI->m_hObject >> 4) % 97) * (kStancePeriod / 97.0f),
+                                    kStancePeriod);
+        }
+    }
     const Vec3 up(0.0f, 1.0f, 0.0f);
     for (size_t i = 0; i < kinds.size(); ++i)
     {
@@ -9439,6 +10807,8 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
             Step s2 = {Vec3(portal.x, exit.y, portal.z), CAIPathWaypoint::eInstructionLadderTo, true, false, up};
             Step s3 = {Vec3(exit.x, exit.y + rise, exit.z), CAIPathWaypoint::eInstructionMoveTo, true, true, up};
             Step s4 = {node, CAIPathWaypoint::eInstructionMoveTo, false, false, up};
+            ladderAt.push_back(steps.size() + 1);   // where its LadderTo is (see the bot on a ladder, below)
+            ladderPortal.push_back(portal);
             steps.push_back(s1);
             steps.push_back(s2);
             steps.push_back(s3);
@@ -9475,6 +10845,46 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
             }
             ++crawls;
         }
+        else if (kinds[i] == avp2bots::NAV_DROP)
+        {
+            // Off a ledge: the landing waypoint lies a cell or two beyond the edge, and a bot whose box (half-width
+            // dims.x) still rested on the edge there had "reached" it (a MoveTo ignores height) and went on along the
+            // upper floor: on evac_verloc every alien from one spawn point walked down a ramp into a corner that way
+            // (prod's worst stuck spot, 122 episodes in 5 h). The landing goes past the edge by the half-width + 8
+            // along the drop, when that point is still on the floor below.
+            Vec3 land = node;
+            const Vec3 from = i > 0 ? pts[2 * i - 1] : Vec3(p.x, p.y - dims.y, p.z);
+            float dx = node.x - from.x, dz = node.z - from.z;
+            const float dl = sqrtf(dx * dx + dz * dz);
+            if (dl > 1.0f)
+            {
+                dx /= dl;
+                dz /= dl;
+                const Vec3 past(node.x + dx * (dims.x + 8.0f), node.y, node.z + dz * (dims.x + 8.0f));
+                const int n = g_nav.Nearest(past);
+                // still on the floor below, and nothing between the landing and that point (a wall, a crate, the
+                // ground rising: the move would stick there)
+                if (n >= 0 && fabsf(g_nav.Node(n).pos.y - node.y) <= 24.0f && avp2bots::DistXZ(g_nav.Node(n).pos, past) <= 40.0f &&
+                    ClearLine(LTVector(node.x, node.y + 36.0f, node.z), LTVector(past.x, past.y + 36.0f, past.z)))
+                    land = past;
+            }
+            Step s1 = {portal, CAIPathWaypoint::eInstructionMoveTo, true, false, up};
+            Step s2 = {land, CAIPathWaypoint::eInstructionMoveTo, true, false, up};
+            steps.push_back(s1);
+            steps.push_back(s2);
+            pathDrops.push_back(std::make_pair(portal, land));
+        }
+        else if (stancePhase >= 0.0f && kinds[i] == avp2bots::NAV_WALK && stanceArc + avp2bots::Dist(stancePrev, portal) < kStanceRange &&
+                 fmodf(stancePhase + (stanceArc + avp2bots::Dist(stancePrev, portal)) / kStanceSpeed, kStancePeriod) <
+                     kStanceCrouch * kStancePeriod)
+        {
+            // the crouched part of the stance rhythm: as a crawl (wall-walk on the floor, positions on the surface)
+            Step s1 = {portal, CAIPathWaypoint::eInstructionWallWalkTo, true, true, up};
+            Step s2 = {node, CAIPathWaypoint::eInstructionWallWalkTo, true, true, up};
+            steps.push_back(s1);
+            steps.push_back(s2);
+            ++stanced;
+        }
         else
         {
             Step s1 = {portal, CAIPathWaypoint::eInstructionMoveTo, false, false, up};
@@ -9482,6 +10892,8 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
             steps.push_back(s1);
             steps.push_back(s2);
         }
+        stanceArc += avp2bots::Dist(stancePrev, portal) + avp2bots::Dist(portal, node);
+        stancePrev = node;
         prevFloor = node.y;
     }
     if (ambush)
@@ -9523,6 +10935,135 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
         }
     }
 
+    // a Runner's run along a wall (bots.cfg wallrun, see WallBeside)
+    int wallRuns = 0;
+    if (g_cfg.wallRun && alien && allowClimb && !ambush)
+    {
+        const Bot* wb = FindBot(pAI->m_hObject);
+        if (wb && wb->stage == 0 && !strcmp(ClassName(*wb), "Runner"))
+        {
+            for (size_t i = 0; i + 1 < steps.size() && !wallRuns; ++i)
+            {
+                // the longest straight run of plain floor MoveTo steps from i
+                if (steps[i].instruction != CAIPathWaypoint::eInstructionMoveTo || steps[i].fixed)
+                    continue;
+                size_t j = i;
+                float dx = 0.0f, dz = 0.0f, len = 0.0f;
+                while (j + 1 < steps.size() && steps[j + 1].instruction == CAIPathWaypoint::eInstructionMoveTo &&
+                       !steps[j + 1].fixed && fabsf(steps[j + 1].pos.y - steps[i].pos.y) < 8.0f)
+                {
+                    const float sx = steps[j + 1].pos.x - steps[j].pos.x, sz = steps[j + 1].pos.z - steps[j].pos.z;
+                    const float sl = sqrtf(sx * sx + sz * sz);
+                    if (sl > 1.0f && len > 1.0f && (sx * dx + sz * dz) / (sl * len) < 0.94f)
+                        break;   // turns more than 20 degrees from the stretch so far
+                    dx += sx;
+                    dz += sz;
+                    len = sqrtf(dx * dx + dz * dz);
+                    ++j;
+                }
+                if (len < kWallRunMin)
+                    continue;
+                const LTVector dir(dx / len, 0.0f, dz / len);
+                for (int sideSign = -1; sideSign <= 1 && !wallRuns; sideSign += 2)
+                {
+                    const LTVector side(-dir.z * sideSign, 0.0f, dir.x * sideSign);
+                    LTVector first, last, n0, n, at, top;
+                    bool ok = true;
+                    int samples = 0;
+                    for (float sdist = 32.0f; sdist <= len - 32.0f && ok; sdist += 64.0f, ++samples)
+                    {
+                        const Vec3 f(steps[i].pos.x + dir.x * sdist, steps[i].pos.y, steps[i].pos.z + dir.z * sdist);
+                        ok = WallBeside(f, side, kWallRunH, &at, &n) && WallBeside(f, side, kWallRunH + 64.0f, &top, &n);
+                        if (!ok)
+                            break;
+                        if (samples == 0)
+                        {
+                            first = at;
+                            n0 = n;
+                        }
+                        else if (n.Dot(n0) < 0.98f || fabsf((at - first).Dot(n0)) > 16.0f)
+                            ok = false;   // not one flat wall
+                        last = at;
+                    }
+                    if (!ok || samples < 3)
+                        continue;
+                    // onto the wall, along it, down to the stretch's last floor point
+                    Step on = {Vec3(first.x, first.y, first.z), CAIPathWaypoint::eInstructionWallWalkTo, true, true,
+                               Vec3(n0.x, n0.y, n0.z)};
+                    Step along = {Vec3(last.x, last.y, last.z), CAIPathWaypoint::eInstructionWallWalkTo, true, true,
+                                  Vec3(n0.x, n0.y, n0.z)};
+                    Step down = {steps[j].pos, CAIPathWaypoint::eInstructionWallWalkTo, true, true, up};
+                    steps.erase(steps.begin() + i + 1, steps.begin() + j + 1);
+                    steps.insert(steps.begin() + i + 1, down);
+                    steps.insert(steps.begin() + i + 1, along);
+                    steps.insert(steps.begin() + i + 1, on);
+                    ++wallRuns;
+                    if (g_cfg.debug)
+                        Log("WALLRUN %s along %.0f units of wall from %.0f %.0f %.0f to %.0f %.0f %.0f", ObjectLabel(pAI->m_hObject).c_str(),
+                            (last - first).Mag(), first.x, first.y, first.z, last.x, last.y, last.z);
+                }
+            }
+        }
+    }
+
+    // A bot on a ladder (the attack goal can stop it there; a path is recomputed mid-climb) got a path that began with a
+    // MoveTo toward the floor waypoint nearest it, which does nothing on a ladder: it hung there until its stuck checks
+    // gave up (dm_dropzone, dm_depot, dm_auriga: the same ladders in every mode in prod). It starts with a LadderTo of
+    // that ladder instead: the path's own when the path takes this ladder within its first steps (the walk to its foot
+    // or top dropped), else a climb to the end nearer the path's start, stepping off there.
+    // (not aliens: they do not use ladders, one standing in a ladder's volume reads as climbing too)
+    if (allowLadders && pAI->GetMovement()->GetMovementState() == CMS_CLIMBING)
+    {
+        const Vec3 me(p.x, p.y - dims.y, p.z);
+        const char* how = "none";
+        size_t own = (size_t)-1;
+        for (size_t k = 0; k < ladderAt.size() && own == (size_t)-1; ++k)
+            if (ladderAt[k] <= 8 && avp2bots::DistXZ(ladderPortal[k], me) < 64.0f)
+                own = ladderAt[k];
+        if (own != (size_t)-1)
+        {
+            steps.erase(steps.begin(), steps.begin() + own);
+            how = "path";
+        }
+        else
+        {
+            const avp2bots::NavLink* on = 0;
+            float bestD = 64.0f;
+            for (int n = 0; n < g_nav.NodeCount(); ++n)
+            {
+                const std::vector<avp2bots::NavLink>& ls = g_nav.Node(n).links;
+                for (size_t k = 0; k < ls.size(); ++k)
+                {
+                    const avp2bots::NavLink& l = ls[k];
+                    if (l.kind != avp2bots::NAV_LADDER || !l.hasEnds)
+                        continue;
+                    const float lo = l.enter.y < l.exit.y ? l.enter.y : l.exit.y;
+                    const float hi = l.enter.y < l.exit.y ? l.exit.y : l.enter.y;
+                    const float d = avp2bots::DistXZ(l.portal, me);
+                    if (d < bestD && me.y >= lo - 32.0f && me.y <= hi + 32.0f)
+                    {
+                        bestD = d;
+                        on = &l;
+                    }
+                }
+            }
+            if (on)
+            {
+                const Vec3 first = steps.empty() ? Vec3(vDest.x, vDest.y - dims.y, vDest.z) : steps[0].pos;
+                const Vec3 end = avp2bots::Dist(on->enter, first) <= avp2bots::Dist(on->exit, first) ? on->enter : on->exit;
+                const float rise = end.y > me.y ? 16.0f : 0.0f;
+                Step s2 = {Vec3(on->portal.x, end.y, on->portal.z), CAIPathWaypoint::eInstructionLadderTo, true, false, up};
+                Step s3 = {Vec3(end.x, end.y + rise, end.z), CAIPathWaypoint::eInstructionMoveTo, true, true, up};
+                steps.insert(steps.begin(), s3);
+                steps.insert(steps.begin(), s2);
+                ++ladders;
+                how = end.y > me.y ? "up" : "down";
+            }
+        }
+        if (strcmp(how, "none") || g_cfg.debug)
+            Log("LADDERRESUME ai=%s at %.0f %.0f %.0f: %s", ObjectLabel(pAI->m_hObject).c_str(), me.x, me.y, me.z, how);
+    }
+
     // drop plain steering points that barely change direction (keeps the AI from stuttering every 32 units)
     std::vector<Step> simple;
     Vec3 prev(p.x, p.y - dims.y, p.z);
@@ -9559,6 +11100,11 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
             simple.erase(simple.begin(), simple.begin() + skip);
     }
 
+    if (Bot* db = FindBot(pAI->m_hObject))
+    {
+        db->drops = pathDrops;
+        db->dropWatch = -1;
+    }
     pPath->ClearWaypoints();
     // AddWaypoint pushes to the front: add the destination first, then the steps backwards
     if (ambush)
@@ -9586,9 +11132,9 @@ LTBOOL BotMgr_FindPath(CAI* pAI, const LTVector& vDest, CAIPath* pPath)
         pPath->AddWaypoint(w);
     }
     if (g_cfg.debug || ladders || climbs || ambush || crawls)
-        Log("PATH ai=%s from=%d to=%d steps=%u ladders=%d climbs=%d crawls=%d%s%s expanded=%d", ObjectLabel(pAI->m_hObject).c_str(),
-            a, b, (unsigned)simple.size(), ladders, climbs, crawls, pBias ? " wallapproach" : "", ambush ? " ambush" : "",
-            g_nav.LastExpanded());
+        Log("PATH ai=%s from=%d to=%d steps=%u ladders=%d climbs=%d crawls=%d%s%s stanced=%d expanded=%d",
+            ObjectLabel(pAI->m_hObject).c_str(), a, b, (unsigned)simple.size(), ladders, climbs, crawls,
+            pBias ? " wallapproach" : "", ambush ? " ambush" : "", stanced, g_nav.LastExpanded());
     if (g_cfg.debug)
     {
         // the first steps (M MoveTo, W WallWalkTo, J JumpTo, w WWJumpTo, L LadderTo) and the waypoints' link kinds
@@ -9835,6 +11381,8 @@ bool BotMgr_Command(const char* text, char* reply, int replySize)
     {
         LoadConfig();
         g_nav.UseLadders(g_cfg.ladders);
+        NestedCreateFixUpkeep(); // the engine fixes switch at once too (a console command never runs inside a creation)
+        EmptySoundsFixUpkeep();
         g_lastHumans = -1;
         if (g_cfg.fill > 0)
         {

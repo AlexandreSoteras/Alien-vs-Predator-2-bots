@@ -24,8 +24,10 @@ LTFLOAT BotRoamGoal::GetBid()
     // target out of sight (AttackOther 30)
     if (BotMgr_AmmoRunWanted(GetAIPtr()))
         return 65.0f;
-    // ... and a facehugger with no victim keeps moving instead of the attack's 5-12 s wait (BotMgr_HugRoam)
-    return (m_hFeed.GetHOBJECT() || BotMgr_FeedWanted(GetAIPtr()) || BotMgr_HugRoam(GetAIPtr())) ? 45.0f : 15.0f;
+    // ... and a facehugger with no victim keeps moving instead of the attack's 5-12 s wait (BotMgr_HugRoam), as does a
+    // bot whose target has just died (BotMgr_KillMove, bots.cfg killmove)
+    return (m_hFeed.GetHOBJECT() || BotMgr_FeedWanted(GetAIPtr()) || BotMgr_HugRoam(GetAIPtr()) ||
+            BotMgr_KillMove(GetAIPtr())) ? 45.0f : 15.0f;
 }
 
 void BotRoamGoal::Load(HMESSAGEREAD hRead)
@@ -149,7 +151,8 @@ void BotRoamGoal::Update()
         return;
     }
 
-    if (!m_Follow.IsSet() || m_Follow.IsDone() || now > m_fGiveUpTime)
+    // a drop on the path turned out not to exist (BotMgr's FAKEDROP): a new destination, by another way
+    if (!m_Follow.IsSet() || m_Follow.IsDone() || now > m_fGiveUpTime || BotMgr_TakeRepath(GetAIPtr()))
     {
         if (now >= m_fRetryTime)
             PickDestination();
@@ -249,6 +252,20 @@ void BotRoamGoal::PickDestination()
         return;
     }
 
+    // a fight heard (bots.cfg hearshots): go there, as a player runs to gunfire
+    LTVector shot;
+    if (BotMgr_ShotDest(GetAIPtr(), &shot) && m_Follow.Set(shot))
+    {
+        m_fGiveUpTime = now + 10.0f + (shot - p).Mag() / 150.0f;
+        if (BotMgr_Debug())
+        {
+            char who[64] = "";
+            g_pLTServer->GetObjectName(GetAIPtr()->m_hObject, who, sizeof(who));
+            BotMgr_Log("ROAM %s to a fight heard at %.0f %.0f %.0f", who, shot.x, shot.y, shot.z);
+        }
+        return;
+    }
+
     int from = nav->Nearest(Vec3(p.x, p.y - dims.y, p.z));
     for (int attempt = 0; attempt < 4; ++attempt)
     {
@@ -256,6 +273,15 @@ void BotRoamGoal::PickDestination()
         const CharacterButes* cb = GetAIPtr()->GetButes();
         const bool alien = cb && cb->m_eCharacterClass == ALIEN;
         int to = nav->RandomReachable(from, GetRandom(0.0f, 1.0f), alien ? 0 : -1, alien && BotMgr_CanWallWalk(GetAIPtr()));
+        // in a small pocket left by drops only (a component of its own: dm_aizin's spawn ledge at 1296 160 -1328,
+        // three waypoints, a Marine paced them until removed at every map start), a place in the main area instead;
+        // the path goes down the drop
+        if (nav->ComponentSize(from, alien ? 0 : -1, alien && BotMgr_CanWallWalk(GetAIPtr())) < 40)
+        {
+            const int inMain = nav->RandomInLargest(GetRandom(0.0f, 1.0f), alien ? 0 : -1, alien && BotMgr_CanWallWalk(GetAIPtr()));
+            if (inMain >= 0)
+                to = inMain;
+        }
         if (to < 0)
             return;
         const Vec3& d = nav->Node(to).pos;

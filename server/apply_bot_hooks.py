@@ -215,6 +215,13 @@ def main():
                    "\t\t\tif( pCharacter && BotMgr_IsBot(pMovement->GetObject()) )\n"
                    "\t\t\t\tBotMgr_PounceHit(pCharacter, pInfo->m_hObject, damage);\n"
                    "\t\t\telse if(pCharacter)\n\t\t\t\tdamage.DoDamage(pCharacter, pInfo->m_hObject);\n"),
+        # the AI's pounce starts with no velocity, so its touch rule ended it on the ground it stood on (most bot
+        # pounces on dm_compound); a player's launch leaves that ground behind its motion (BotMgr_PounceTouchIgnored)
+        ("pouncelaunchtouch",
+         r"^(\tif\( IsAI\(pMovement->GetObject\(\)\) \)\n\t\{\n)(\t\tCharacterMovementState_Pouncing_TN\(pMovement, pInfo, fForceMag\);\n)",
+         lambda m: m.group(1) + "\t\t// @TAG: a bot's pounce is not ended by the ground it leaves (a player's launch)\n"
+                   "\t\tif( BotMgr_IsBot(pMovement->GetObject()) && BotMgr_PounceTouchIgnored(pMovement, pInfo) )\n"
+                   "\t\t\treturn LT_OK;\n\n" + m.group(2)),
     ])
 
     print("Character.h")
@@ -238,6 +245,15 @@ def main():
                    "\t\tvoid\tForceTrackerSwitch()\t\t{ m_bWaiting = LTFALSE; }\n"),
     ])
 
+    print("CharacterAnimation.cpp")
+    patch("Shared/CharacterAnimation.cpp", [
+        # stock leak: Term() keeps the layer list, so every character destroyed left its 3-4 layers (72 bytes
+        # each) on the heap. A player is reset, not destroyed; a bot is a new object at every spawn (~230 bytes
+        # per spawn, found with a heap probe)
+        ("animlayerleak", r"^(CharacterAnimation::~CharacterAnimation\(\)\n\{\n\tTerm\(\);\n)",
+         lambda m: m.group(1) + "\tClearLayers(); // @TAG: the layer list was never freed\n"),
+    ])
+
     print("AI.h")
     patch("ObjectDLL/AI.h", [
         ("mpsets",
@@ -249,6 +265,13 @@ def main():
                    "\t\t\tif( root_name.size() > 3 && 0 == _stricmp(root_name.c_str() + root_name.size() - 3, \"_MP\") )\n"
                    "\t\t\t\treturn root_name;\n"
                    "\t\t\treturn root_name + std::string(\"_AI\");\n\t\t}\n"),
+    ])
+
+    print("AIStrategyMove.h")
+    patch("ObjectDLL/AIStrategyMove.h", [
+        # the point the move strategy steers to, for the bots' debug log (MOVE lines)
+        ("botmovedest", r"^(\t\tbool  IsDone\(\) +const;\n)",
+         lambda m: m.group(1) + "\t\tconst LTVector & BotGetDest() const { return m_vDest; } // @TAG: debug log\n"),
     ])
 
     print("AIActionMoveTo.cpp")
@@ -270,6 +293,37 @@ def main():
          lambda m: m.group(1)
          + "\t\t// @TAG: without a node (bot paths), use the surface normal the waypoint carries\n"
          + "\t\tGetAIPtr()->GetMovePtr()->SetWallWalk( m_Waypoint.GetArgumentPosition(), m_Waypoint.GetArgumentNormal(), pDestNode );\n"),
+        # an alien bot running along its path may pounce ahead over open ground, as players cross maps (bots.cfg
+        # travelpounce, BotMgr_TravelPounce); the waypoints flown over are dropped, the current one by the FSM
+        ("travelpounce",
+         r"^(void CAIStrategyFollowPath::UpdateMoveTo\(PathFSM \* pathFSM\)\n\{\n\t_ASSERT\( GetAIPtr\(\) \);\n)"
+         r"(\n\tGetAIPtr\(\)->GetMovePtr\(\)->Update\(\);\n)",
+         lambda m: m.group(1)
+         + "\n\t// @TAG: a bot alien may pounce ahead along its path (BotMgr_TravelPounce sets the pounce action)\n"
+         + "\t{\n\t\textern bool BotMgr_TravelPounce(CAI* pAI, const CAIPathWaypoint& current, CAIPath& path);\n"
+         + "\t\tif( m_pCurrentPath && BotMgr_TravelPounce(GetAIPtr(), m_Waypoint, *m_pCurrentPath) )\n"
+         + "\t\t{\n\t\t\tGetAIPtr()->GetMovePtr()->Clear();\n\t\t\tpathFSM->AddMessage(Path::eFinishedWaypoint);\n"
+         + "\t\t\treturn;\n\t\t}\n\t}\n" + m.group(2)),
+    ])
+
+    print("DestructibleModel.cpp (hearing)")
+    patch("ObjectDLL/DestructibleModel.cpp", [
+        ("include", r'^(#include "DestructibleModel.h"[^\n]*\n)',
+         lambda m: m.group(1) + '#include "BotMgr.h" // @TAG\n'),
+        # a window or prop that breaks plays its debris' explode sound to every client (radius 1000): bots hear it
+        ("hearbreak", r"^(\t\t\t\tm_bCreatedDebris = LTTRUE;\n)",
+         lambda m: m.group(1) + "\n\t\t\t\t// @TAG: the bots hear it break, as players do (bots.cfg hearbreak)\n"
+                   "\t\t\t\tBotMgr_HearBreak(m_hObject, GetLastDamager());\n"),
+    ])
+
+    print("AIActionMisc.cpp (travel pounce)")
+    patch("ObjectDLL/AIActionMisc.cpp", [
+        # the pounce action set by BotMgr_TravelPounce flies toward a point on the bot's path, not at its target
+        ("travelpouncelaunch",
+         r"^(\tif\( !m_bStartedPounce \)\n\t\{\n\t\tm_bStartedPounce = LTTRUE;\n)(\n\t\tRCMessage pMsg;\n)",
+         lambda m: m.group(1)
+         + "\n\t\t// @TAG: a bot's pounce along its path goes to a point, not at the target (BotMgr_TravelPounce)\n"
+         + "\t\tif( BotMgr_TravelPounceLaunch(GetAIPtr()) )\n\t\t\treturn;\n" + m.group(2)),
     ])
 
     print("AIAlienAttack.cpp")
@@ -769,6 +823,30 @@ def main():
          r"\tif\( damage_msg\.hDamager \)\n",
          lambda m: m.group(1) + "\t// @TAG: bots take damage from themselves, teammates and acid pools, as players do\n"
                    "\tif( damage_msg.hDamager && !BotMgr_LikePlayer(m_hObject, BOTRULE_IMMUNITY) )\n"),
+        # a stunned player plays the "Stunned" action (CPlayerObj::UpdateActionAnimation) and turns at a quarter of his
+        # mouse sensitivity (CGameClientShell::UpdateStunEffect); a bot does with bots.cfg stunlike
+        ("botstunanim",
+         r"^(\t\telse\n\t\t\tm_caAnimation\.SetLayerReference\(ANIMSTYLELAYER_ACTION, \"Idle\"\);\n\t\}\n)(\}\n)",
+         lambda m: m.group(1) + "\n\t// @TAG: a stunned bot plays a stunned player's action (bots.cfg stunlike)\n"
+                   "\tif( BotMgr_StunAnim(m_hObject) )\n"
+                   "\t\tm_caAnimation.SetLayerReference(ANIMSTYLELAYER_ACTION, \"Stunned\");\n" + m.group(2)),
+        # a bot's current weapon pointer is its weapon attachment's (CCharacter's walk through the attachments): a stale
+        # one (the weapon freed under it) crashed in TargetAimPoint (evac_colony as Deathmatch, 2026-11-27)
+        ("botweaponsync",
+         r"^(\t// PreUpdate\n\n\tPreUpdate\(\);\n)",
+         lambda m: "\t// @TAG: a bot's current weapon must still be its attachment's (a stale one crashed the server)\n"
+                   "\tif( m_pCurrentWeapon && GetAttachments() && BotMgr_IsBot(m_hObject) )\n\t{\n"
+                   "\t\tCWeapon * const pAttached = CCharacter::GetCurrentWeaponPtr();\n"
+                   "\t\tif( pAttached != m_pCurrentWeapon )\n\t\t{\n"
+                   "\t\t\tBotMgr_WeaponSync(m_hObject, pAttached != LTNULL);\n"
+                   "\t\t\tm_pCurrentWeapon = pAttached;\n"
+                   "\t\t\tif( !pAttached )\n\t\t\t{\n\t\t\t\tm_nCurrentWeapon = -1;\n\t\t\t\tm_pCurrentWeaponButes = LTNULL;\n\t\t\t}\n"
+                   "\t\t}\n\t}\n\n" + m.group(1)),
+        ("botstunturn",
+         r"^\tconst LTFLOAT fTurnRate = MATH_DEGREES_TO_RADIANS\(pMovement->GetCharacterVars\(\)->m_fTurnRate\);\n",
+         lambda m: "\t// @TAG: a stunned bot turns at a stunned player's rate (bots.cfg stunlike, stunturn)\n"
+                   "\tconst LTFLOAT fTurnRate = MATH_DEGREES_TO_RADIANS(pMovement->GetCharacterVars()->m_fTurnRate)\n"
+                   "\t\t* BotMgr_TurnScale(pAI->m_hObject);\n"),
     ])
 
     # Predator weapons as a player's (bots.cfg predammo / predlock): finite spears, one disc that must come back
@@ -805,6 +883,10 @@ def main():
         ("botdisc", r"^(\t\t\tif\(pChar->IsDead\(\) \|\| )pChar->HasDiscAmmo\(\)\)\n",
          lambda m: "\t\t\t// @TAG: a Predator bot's stuck disc waits for its recall, as a player's (an AI's disc pool is infinite)\n"
                    + m.group(1) + "(!BotMgr_PredAmmoBot(m_hFiredFrom) && pChar->HasDiscAmmo()))\n"),
+        # the bots that see a disc coming may jump aside (bots.cfg discdodge)
+        ("discdodge", r"^(\tm_bMoving = fVel != 0;\n)",
+         lambda m: m.group(1) + "\n\t// @TAG: bots that see it coming may jump aside (bots.cfg discdodge)\n"
+                   "\tif( m_bMoving )\n\t\tBotMgr_DiscFlying(m_hObject, m_hFiredFrom, vPos, vVel);\n"),
     ])
 
     # Hearing: in multiplayer the AI never heard anything of other characters' movement; players hear every
@@ -822,6 +904,11 @@ def main():
          r"^(int CCharacter::PlayExclamationSound\(const char\* szSoundType\)\n\{\n)",
          lambda m: m.group(1) + "\t// @TAG: bots do not speak the single-player AI's lines (players have no such voice)\n"
                    "\tif( BotMgr_IsBot(m_hObject) )\n\t\treturn -1;\n\n"),
+        # CCharacter::SetLastFireInfo: every shot was told to the AI in single player only (bots.cfg hearshots)
+        ("hearshots",
+         r"^(\t\t\t\(\*iter\)->GetSenseMgr\(\)\.WeaponFire\(info,this\);\n\t\t\}\n\t\}\n)",
+         lambda m: m.group(1) + "\t// @TAG: in multiplayer the bots hear it, as the players' clients play it (bots.cfg hearshots)\n"
+                   "\telse if( BotMgr_HearShots() )\n\t\tBotMgr_HeardShot(this, info);\n"),
     ])
     print("PlayerObj.cpp (hearing)")
     relay = lambda cfx: (r"^(\t\t\t\tg_pLTServer->WriteToMessageByte\(hMessage, " + cfx +
@@ -1023,6 +1110,23 @@ def main():
         ("botmeleereach2",
          r"^(\t\telse if\( )(fTargetRangeSqr < weapon_butes\.fMinIdealRange\*weapon_butes\.fMinIdealRange \))\n",
          lambda m: m.group(1) + "nBotReach == 0 && " + m.group(2) + " // @TAG\n"),
+        # after a blow on an alien a Predator bot steps out of its acid, back and to one side (bots.cfg meleedance)
+        ("botmeleeout",
+         r"^(\t\tconst int nBotReach = BotMgr_MeleeReach\(GetAIPtr\(\), fTargetRangeSqr\);\n)",
+         lambda m: m.group(1) + "\t\t// @TAG: 2 = step out of an alien's acid after a blow (bots.cfg meleedance)\n"
+                   "\t\tif( nBotReach == 2 )\n\t\t{\n"
+                   "\t\t\tm_bHasAnim = GetAIPtr()->GetAnimation()->SetLayerReference(ANIMSTYLELAYER_ACTION, \"RunB\" );\n"
+                   "\t\t\tGetAIPtr()->Reverse();\n"
+                   "\t\t\tif( BotMgr_MeleeSide(GetAIPtr()) > 0 )\n\t\t\t\tGetAIPtr()->StrafeRight();\n"
+                   "\t\t\telse\n\t\t\t\tGetAIPtr()->StrafeLeft();\n\t\t}\n\t\telse\n"),
+        # an alien bot circles a stunned or netted victim while clawing it (bots.cfg clawclose)
+        ("botclawcircle",
+         r"^(\t\t// avp2bots:botmeleeout: [^\n]*\n)",
+         lambda m: "\t\t// @TAG: 3 = an alien circling a stunned victim while it claws (bots.cfg clawclose)\n"
+                   "\t\tif( nBotReach == 3 )\n\t\t{\n"
+                   "\t\t\tm_bHasAnim = GetAIPtr()->GetAnimation()->SetLayerReference(ANIMSTYLELAYER_ACTION, \"RunF\" );\n"
+                   "\t\t\tif( BotMgr_MeleeSide(GetAIPtr()) > 0 )\n\t\t\t\tGetAIPtr()->StrafeRight();\n"
+                   "\t\t\telse\n\t\t\t\tGetAIPtr()->StrafeLeft();\n\t\t}\n\t\telse\n" + m.group(1)),
     ])
 
     print("AI.cpp/.h (a stunned bot can still turn and fire, as a stunned player)")

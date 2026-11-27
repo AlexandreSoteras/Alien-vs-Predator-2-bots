@@ -61,6 +61,8 @@ seecloak = 1
 predheal = 1
 predammo = 1
 predlock = 1
+# Predator bots decloak by hand before a decloaking shot, a sift or the medicomp
+cloakfire = 1
 # Marine and Predator bots strafe while firing; alien bots zig-zag toward a target facing them
 combatmove = 1
 zigzag = 1
@@ -70,17 +72,29 @@ headbite = 1
 tail = 1
 pouncestun = 1
 clawspread = 1
+# Alien bots claw from point-blank and circle a stunned victim
+clawclose = 1
 pounce = 1
 pounceflight = 1
+# Alien bots pounce ahead along their route over open ground
+travelpounce = 1
 wallapproach = 1
+# Runner bots run along walls beside their way
+wallrun = 1
 wallambush = 1
 # Marine bots use the motion tracker (front half circle, as players)
 tracker = 1
+# Marine bots with a rocket or grenade launcher pre-fire where a tracker contact will come out
+prefire = 1
 # Bots take ammo boxes like players; Marine bots use the alternate ammo they picked up
 ammopickups = 1
 altfire = 1
 # Bots hear footsteps like players and glance toward them
 hearsteps = 1
+# Bots hear a window or prop break
+hearbreak = 1
+# Bots hear gunfire and head for the fights they hear
+hearshots = 1
 # Alien lifecycle (server option Lifecycle): facehuggers hunt like players, chestbursters hide until they grow
 huglike = 1
 hugbody = 1
@@ -105,6 +119,8 @@ preferdrops = 1
 headroom = 1
 # A Predalien crouches through passages lower than itself, as players do
 crawl = 1
+# A Predalien crouches and stands by turns as it closes in on a gun
+stance = 1
 # The Smart Gun's tracking needs this many seconds to lock a new target (before it, a person's aim)
 smartlock = 0.6
 # The end-of-level scoreboard and the pause between Evac rounds: bots stand still and nobody fights, as players
@@ -117,21 +133,43 @@ netescape = 1
 heavywalk = 1
 # A stunned bot cannot move but still turns and fires
 stunfire = 1
+# A stunned bot plays the Stunned animation, aims worse, turns slower
+stunlike = 1
+stunaim = 3.0
+stunturn = 0.25
 # The pounce cry players hear from an alien's pounce
 pouncecry = 1
 # Marine bots back away from aliens and blades while they shoot
 backpedal = 1
+# Marine and Predator bots jump aside from a disc they see coming
+discdodge = 1
+# Chance per second that a Predator or alien bot close to its target crouch-jumps
+crouchjump = 0.3
+# A bot running in place against something jumps
+stuckjump = 1
 # A burning enemy is noticed faster, and seen through a cloak
 seeburning = 1
 # Seconds a bot keeps watching where a live enemy left its sight (0 = off)
 alert = 5
 # Bots ignore bodies, blood and death cries
 nocorpselook = 1
+# A bot whose target has just died moves on instead of waiting there
+killmove = 1
 # A Predator bot strikes by its weapon's reach and finishes a swing it began
 meleereach = 1
+# A Predator steps out of an alien's acid after each blow
+meleedance = 1
+# Chance per second that a bot in a fight jumps aside, as players do (0 = never)
+combatjump = 0.15
+# Marine bots only set a strong target alight with the flame thrower, then take a stronger weapon
+flamemark = 1
 # The rocket or grenade of a bot killed before it landed still explodes
 orphanblasts = 1
-# Ask for the low-fragmentation heap at start (Wine hosts)
+# Engine leak fix: an object created during another's creation no longer loses that one's property list
+nestedcreate = 1
+# Engine leak fix: no inaudible server sound while no client is connected (the engine kept every one)
+emptysounds = 1
+# Ask for the low-fragmentation heap at start
 lfh = 1
 
 # Follow the server's alien lifecycle option (facehugger -> chestburster -> adult)

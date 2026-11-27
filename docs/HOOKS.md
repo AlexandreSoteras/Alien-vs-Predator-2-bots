@@ -68,4 +68,22 @@
 | botseesize | AISenseSee.cpp | Bots notice small targets more slowly (`BotMgr_SizeSeeFactor`, option `smallsight`). |
 | botweaponhit | PlayerObj.cpp | `CPlayerObj::HandleMessage_WeaponHit`: in multiplayer the client hit-tests a player's bullets (`MID_WEAPON_HIT`) and the server applied such a hit only to a player; hits on bots were dropped, so only explosions hurt them reliably. A hit on a bot now counts when the bot is within 600 units of where the client saw it (`BotMgr_ValidateHit`). |
 | botmissionfail | Character.cpp | `CCharacter::CheckMissionFailed`: never in multiplayer. A player killing an AI character the game calls his ally (a Marine bot killed by a Marine player in Deathmatch) sent the single-player "Mission failed!" screen to every client; stock multiplayer never had AI characters. |
+| botpause | AI.cpp | During the end-of-level scoreboard and the pause between rounds, bots stand still as players do (their goals kept walking them about). |
+| botcburst, botcburstanim | BodyProp.cpp | A bot's facehugger victim bursts: BotMgr replaces the hugger with a chestburster bot on the body. |
+| dangerweapon | AICombatGoal.cpp | A damager between weapons (or respawning) has no current weapon: use the last damage instead of reading a null weapon. |
+| evaccount, evacstartcount, evacstart, evacround, evacbotstart, evacend, evacalive | MultiplayerMgr.cpp | Evac with bots: bots count as defenders and attackers, a round starts with no player in, a team of bots has not "quit", bots alive count for the round's end. |
+| survcount, survclients1, survclients2, survround, survlimits | MultiplayerMgr.cpp | Survivor with bots: bots count as survivors, mutants and participants in the round logic and its limits. |
+| huntjoin, huntcount, huntdest, huntbalance, huntlimits | MultiplayerMgr.cpp | Hunt with bots: bots are hunters and prey, in the counts, the race changes, the team balance and the limits. |
+| botstun, botstunupd, botstunned | AI.cpp, AI.h | A stunned bot cannot move but still turns and fires, as a stunned player (the AI's stun action froze aim, fire and turn). `stunfire`. |
+| botstunanim, botstunturn | AI.cpp | A stunned bot plays a stunned player's "Stunned" animation and turns at a quarter speed. `stunlike`. |
+| botweaponsync | AI.cpp | Before each update a bot's current weapon pointer is resynced with its weapon attachment (a stale one crashed in TargetAimPoint). |
+| botsplash | AI.cpp | Bots do not fire an explosive whose blast would reach themselves. |
+| botorphanblast | Explosion.cpp | The rocket, grenade or bolt of a shooter removed before it landed now explodes (it neither went off nor was removed). `orphanblasts`. |
+| botmeleereach, botmeleereach2 | AIActionMisc.cpp | Predator bots time blade and combistick strikes against a target that backs away and finish a swing they started. `meleereach`. |
+| botmeleeout | AIActionMisc.cpp | After a blow on an alien a Predator bot steps out of its acid, back and to one side. `meleedance`. |
+| botclawcircle | AIActionMisc.cpp | An alien bot circles a stunned or netted victim while clawing it. `clawclose`. |
+| botsfxid | Character.cpp | A bot's special FX carry a client id, so the client shows its name under the crosshair and its team for the Smart Gun's friend filter. `nametags`. |
+| pouncelaunchtouch | Character.cpp | A bot's pounce no longer ends on the ground it leaves (the AI's pounce started with no velocity, so its touch rule ended it at once). `pounceflight`. |
+| travelpounce, travelpouncelaunch | AIStrategyFollowPath.cpp, AIActionMisc.cpp | An alien bot running along its path may pounce ahead over open ground, toward a point of its path. `travelpounce`. |
+| hearshots | Character.cpp | `CCharacter::SetLastFireInfo` told the AI about shots in single player only: in multiplayer bots now hear gunfire within each weapon's sound radius. `hearshots`. |
 | (manual commit) | Destructible.cpp | Fix a `GetCanBeOnFire(-1)` out-of-bounds read (random crash at level load). |

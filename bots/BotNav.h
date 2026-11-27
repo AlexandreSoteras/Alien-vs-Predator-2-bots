@@ -107,6 +107,10 @@ public:
 
     // A node reachable from 'from' picked with the given random value in [0,1); -1 if none.
     int RandomReachable(int from, float rnd, int allowLadders = -1, bool allowClimb = false) const;
+    // the size of from's component (the same link sets), and a random waypoint of the largest component: a
+    // pocket left by drops only (one way) is a component of its own, and a bot roaming there never left it
+    int ComponentSize(int from, int allowLadders = -1, bool allowClimb = false) const;
+    int RandomInLargest(float rnd, int allowLadders = -1, bool allowClimb = false) const;
 
     // Ladder links are skipped by FindPath and RandomReachable unless enabled.
     void UseLadders(bool use);
@@ -126,6 +130,8 @@ public:
     // (solid model props are not in the map file the graph was built from). Returns the number of
     // waypoints blocked. ClearBlocks() undoes all of them.
     int BlockBox(const Vec3& mn, const Vec3& mx, int* linksBlocked = 0);
+    // block the drop links whose portal lies within radius of portal (a drop the game does not have); their count
+    int BlockDropsNear(const Vec3& portal, float radius);
     void ClearBlocks();
     bool IsBlocked(int node) const { return node >= 0 && node < (int)m_blocked.size() && m_blocked[node] != 0; }
     // A bot taller than the graph's agent (120: the Predalien is 140) skips waypoints and links with less clear

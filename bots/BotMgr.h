@@ -138,6 +138,17 @@ void BotMgr_PounceStarted(CAI* pAI);
 // pounceflight): true when BotMgr moved it this frame (the AI's own arc is skipped).
 class CharacterMovement;
 bool BotMgr_PounceFlight(CharacterMovement* pMovement);
+// Travel pounce (bots.cfg travelpounce): an alien bot running along its path pounces ahead over open ground, as
+// players cross maps. BotMgr_TravelPounce (hook 'travelpounce', CAIStrategyFollowPath::UpdateMoveTo) decides and sets
+// the pounce action, dropping the waypoints flown over (true: the caller drops the current one too);
+// BotMgr_TravelPounceLaunch (hook 'travelpouncelaunch', AIActionPounce::Update) launches it toward that point.
+// A bot's pounce keeps a player's launch (hook 'pouncelaunchtouch' in Touch_Notify_Pouncing): true = this contact
+// does not end it (the ground it leaves, before its flight has begun).
+class CollisionInfo;
+bool BotMgr_PounceTouchIgnored(CharacterMovement* pMovement, CollisionInfo* pInfo);
+class CAIPathWaypoint;
+bool BotMgr_TravelPounce(CAI* pAI, const CAIPathWaypoint& current, CAIPath& path);
+bool BotMgr_TravelPounceLaunch(CAI* pAI);
 // Facehugger bots (bots.cfg huglike, hook 'bothugrule'): BotMgr_HugRule says whether this AI leaps by the players'
 // rule (a bot facehugger), BotMgr_HugNow whether to leap now (as BotMgr_PounceNow), BotMgr_HugStarted starts the
 // cooldown; BotMgr_HugRoam: a bot facehugger without a victim keeps moving (BotRoam outbids the attack's wait).
@@ -145,6 +156,10 @@ bool BotMgr_HugRule(CAI* pAI);
 bool BotMgr_HugNow(CAI* pAI);
 void BotMgr_HugStarted(CAI* pAI);
 bool BotMgr_HugRoam(CAI* pAI);
+// a bot whose target has just died moves on: BotRoam outbids the attack goal's wait (bots.cfg killmove)
+bool BotMgr_KillMove(CAI* pAI);
+// true once after one of the bot's path drops proved not to exist (FAKEDROP): BotRoam picks a new destination
+bool BotMgr_TakeRepath(CAI* pAI);
 // AI side steps and step backs (dodge, backoff) on maps without AIVolumes: clear way and floor there.
 bool BotMgr_MoveDestOK(CAI* pAI, const LTVector& vDest);
 // Every frame after a bot's action (CAI::Update, hook 'firemove'): while a Marine or Predator bot fires at or
@@ -203,6 +218,14 @@ LTFLOAT BotMgr_TrackerBid(CAI* pAI, LTVector* pBlip);
 enum BotHearKind { BOTHEAR_STEP, BOTHEAR_JUMP, BOTHEAR_LAND };
 void BotMgr_HearStep(CCharacter* pSource, int nKind);
 bool BotMgr_HearSteps();   // bots.cfg 'hearsteps'
+bool BotMgr_HearShots();   // bots.cfg 'hearshots': bots hear gunfire in multiplayer (hook 'hearshots')
+struct CharFireInfo;
+void BotMgr_HeardShot(CCharacter* pShooter, const CharFireInfo& info);
+// a heard fight to go to (BotRoam picks it as its next destination)
+bool BotMgr_ShotDest(CAI* pAI, LTVector* pDest);
+// a window or prop broke (hook 'hearbreak', CDestructibleModel's death): its breaker's enemies among the bots hear it
+// (bots.cfg hearbreak)
+void BotMgr_HearBreak(HOBJECT hBroken, HOBJECT hDamager);
 // A bot's reaction in InvestigateGoal (hooks 'investglance', 'investnoanim', 'investnosearch'; with 'hearsteps'):
 // a person who hears something glances toward it and goes on playing. QuickInvestigate: true for a bot (no
 // investigate animation, no 3-5 s search). GlanceStart: the glance's length (turn, then 0.3-0.6 s, a head turn),
@@ -248,8 +271,19 @@ bool BotMgr_EndPause();
 uint32 BotMgr_SfxClientId(HOBJECT hObj);
 // a stunned bot only stops moving, as a stunned player (bots.cfg stunfire); false: the AI's stun action
 bool BotMgr_StunFire(HOBJECT hObj);
+// a bot's current weapon pointer was not its weapon attachment's any more (hook 'botweaponsync'): logged
+void BotMgr_WeaponSync(HOBJECT hObj, bool hasWeapon);
+// bots.cfg stunlike: a stunned bot plays the players' Stunned action (hook 'botstunanim') and turns at a stunned
+// player's rate (hook 'botstunturn': the turn rate multiplier, 1 when not stunned)
+bool BotMgr_StunAnim(HOBJECT hObj);
+LTFLOAT BotMgr_TurnScale(HOBJECT hObj);
 // a Predator bot's melee action (AIActionFireMelee::Update): 1 run at the target, -1 strike now, 0 the AI's ranges
 int BotMgr_MeleeReach(CAI* pAI, float fTargetRangeSqr);
+// 2 from BotMgr_MeleeReach: step out after a blow on an alien (bots.cfg meleedance), back and to this side (1 right)
+int BotMgr_MeleeSide(CAI* pAI);
+// a Predator's disc in flight (hook 'discdodge', CPredDisk::Update): the bots that see it coming may jump aside
+// (bots.cfg discdodge)
+void BotMgr_DiscFlying(HOBJECT hDisc, HOBJECT hThrower, const LTVector& vPos, const LTVector& vVel);
 // the blast of a projectile whose shooter is gone (a dead bot) goes off in multiplayer (bots.cfg orphanblasts)
 bool BotMgr_OrphanBlasts();
 void BotMgr_SurvivorNewRound(bool lastRound);
